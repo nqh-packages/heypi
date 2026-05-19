@@ -31,6 +31,24 @@ Use `tool()` when the tool needs confirmation. heypi stores the pending call, re
 
 Raw Pi `ToolDefinition` objects are supported for tools that do not require confirmation. If a raw Pi tool includes `confirm`, heypi fails closed because it cannot safely replay the tool after approval.
 
+## Dynamic Context
+
+Use `agentFrom(..., { context })` to append small runtime context blocks to the system prompt for each turn:
+
+```ts
+agentFrom("./agent", {
+	model: "openai/gpt-5-mini",
+	context: [
+		async ({ channel, actor }) => ({
+			title: "Request context",
+			text: [`channel=${channel}`, `actor=${actor}`].join("\n"),
+		}),
+	],
+});
+```
+
+Context is for facts the model should see before choosing tools: known hosts, tenant metadata, user profile, current on-call rotation, feature flags, or channel policy. Keep it compact. Use tools for large data, search, or actions.
+
 ## Confirmation
 
 `confirm` can be a static reason:

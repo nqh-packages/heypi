@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { type CommandPolicyConfig, classifyCommand, tool } from "@hunvreus/heypi";
+import { type AgentContextProvider, type CommandPolicyConfig, classifyCommand, tool } from "@hunvreus/heypi";
 import { Type } from "@sinclair/typebox";
 
 type Host = {
@@ -194,6 +194,15 @@ export function createHostTools(options: HostToolOptions) {
 	];
 }
 
+export function createHostContext(options: Pick<HostToolOptions, "root">): AgentContextProvider {
+	const store = new HostStore(options.root);
+	return async () => {
+		const summary = await store.summary();
+		if (!summary) return undefined;
+		return { title: "Known hosts", text: summary };
+	};
+}
+
 export class HostStore {
 	private readonly root: string;
 	private readonly file: string;
@@ -271,6 +280,24 @@ export class HostStore {
 			for (const host of await this.resolve(query)) byId.set(host.id, host);
 		}
 		return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+	}
+
+	async summary(): Promise<string> {
+		const hosts = (await this.read()).hosts;
+		if (!hosts.length) return "";
+		return hosts
+			.map((host) =>
+				[
+					`- ${host.id}`,
+					`${host.user}@${host.address}:${host.port}`,
+					host.tags.length ? `tags=${host.tags.join(",")}` : undefined,
+					host.aliases.length ? `aliases=${host.aliases.join(",")}` : undefined,
+					host.cwd ? `cwd=${host.cwd}` : undefined,
+				]
+					.filter(Boolean)
+					.join(" "),
+			)
+			.join("\n");
 	}
 
 	async ensureKey(name: string): Promise<{ name: string; publicKey: string }> {

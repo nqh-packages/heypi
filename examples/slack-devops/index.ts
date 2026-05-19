@@ -2,7 +2,8 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadEnvFile } from "node:process";
 import { agentFrom, consoleLogger, createHeypi, slack, sqliteStore, workspace } from "@hunvreus/heypi";
-import { createHostTools } from "./host-tools.js";
+import { createHostContext, createHostTools } from "./host-tools.js";
+import { createRunbookTools } from "./runbook-tools.js";
 
 loadEnv("examples/slack-devops/.env");
 loadEnv(".env");
@@ -39,6 +40,8 @@ const hostTools = createHostTools({
 	commandPolicy,
 	timeoutMs: 60_000,
 });
+const runbookTools = createRunbookTools({ root: resolve("./examples/slack-devops/agent/runbooks") });
+const hostContext = createHostContext({ root: resolve("./examples/slack-devops/state") });
 
 const app = createHeypi({
 	store: sqliteStore({ path: resolve("./examples/slack-devops/heypi.db") }),
@@ -75,7 +78,11 @@ const app = createHeypi({
 		// 	streaming: true,
 		// }),
 	],
-	agent: agentFrom("./examples/slack-devops/agent", { model: "openai/gpt-5-mini", tools: hostTools }),
+	agent: agentFrom("./examples/slack-devops/agent", {
+		model: "openai/gpt-5-mini",
+		context: [hostContext],
+		tools: [...runbookTools, ...hostTools],
+	}),
 	approval: {
 		approvers: list("HEYPI_APPROVERS"),
 		expiresInMs: 10 * 60 * 1000,

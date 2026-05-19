@@ -8,7 +8,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@mariozechner/pi-coding-agent";
-import type { AgentConfig } from "../config.js";
+import type { AgentConfig, AgentContextBlock, AgentContextInput } from "../config.js";
 import type { CallRunner } from "../core/calls.js";
 import { type Logger, logError, logger, redact, userError } from "../core/log.js";
 import type { ReplyStream } from "../io/reply-stream.js";
@@ -213,7 +213,15 @@ export class PiAgent implements Agent {
 		const models = ModelRegistry.inMemory(auth);
 		const model = models.find(modelConfig.provider, modelConfig.name);
 		if (!model) throw new Error(`unknown model: ${modelConfig.provider}/${modelConfig.name}`);
-		const loader = await resourceLoader(agent, settings, log);
+		const contextBlocks = await agentContext(agent, {
+			channel,
+			actor,
+			threadId: context.thread,
+			turnId: context.turn,
+			inputMessageId: context.message,
+			trace: context.trace,
+		});
+		const loader = await resourceLoader(agent, settings, log, contextBlocks);
 		const customTools = tools({
 			runtime: this.input.runtime,
 			callRunner: this.input.callRunner,
@@ -244,7 +252,12 @@ export class PiAgent implements Agent {
 	}
 }
 
-async function resourceLoader(agent: AgentConfig, settings: SettingsManager, _log: Logger): Promise<ResourceLoader> {
+async function resourceLoader(
+	agent: AgentConfig,
+	settings: SettingsManager,
+	_log: Logger,
+	contextBlocks: string[] = [],
+): Promise<ResourceLoader> {
 	const loader = new DefaultResourceLoader({
 		cwd: agent.directory,
 		agentDir: agent.directory,
@@ -255,11 +268,31 @@ async function resourceLoader(agent: AgentConfig, settings: SettingsManager, _lo
 		additionalExtensionPaths: agent.extensions ?? [],
 		additionalSkillPaths: agent.skills ?? [],
 		systemPromptOverride: () => agent.systemPrompt ?? DEFAULT_SYSTEM,
-		appendSystemPromptOverride: () => (agent.prompt ? [agent.prompt] : []),
+		appendSystemPromptOverride: () =>
+			[agent.prompt, ...contextBlocks].filter((text): text is string => Boolean(text)),
 		agentsFilesOverride: () => ({ agentsFiles: [] }),
 	});
 	await loader.reload();
 	return loader;
+}
+
+async function agentContext(agent: AgentConfig, input: AgentContextInput): Promise<string[]> {
+	const out: string[] = [];
+	for (const provider of agent.context ?? []) {
+		const block = await provider(input);
+		const rendered = renderContextBlock(block);
+		if (rendered) out.push(rendered);
+	}
+	return out;
+}
+
+export function renderContextBlock(block: AgentContextBlock | undefined | null | false): string | undefined {
+	if (!block) return undefined;
+	if (typeof block === "string") return block.trim() || undefined;
+	const text = block.text.trim();
+	if (!text) return undefined;
+	const title = block.title?.trim();
+	return title ? `## ${title}\n\n${text}` : text;
 }
 
 function extensionToolNames(loader: ResourceLoader): string[] {

@@ -10,10 +10,11 @@ The agent loads:
 
 - `SYSTEM.md` and `AGENTS.md` for role, scope, and safety constraints.
 - `skills/incident-triage/SKILL.md` for the incident workflow.
-- Markdown runbooks from `runbooks/`, searched through the `runbook_search` Pi extension.
+- Markdown runbooks from `runbooks/`, searched through the `runbook_search` custom tool.
+- Dynamic host context from `state/hosts.json`, appended to the prompt each turn so the agent can recognize host ids, tags, and aliases before choosing tools.
 - Custom host tools from `host-tools.ts` for SSH key onboarding, host inventory, and remote SSH execution.
 
-Runbooks are still supported. In this example they are plain Markdown files under `agent/runbooks/`, exposed to the agent through `agent/extensions/runbook-tools.ts`. The skill tells the agent when to use `runbook_search` and how to apply the results.
+Runbooks are plain Markdown files under `agent/runbooks/`, exposed through `runbook-tools.ts`. The skill tells the agent when to use `runbook_search` and how to apply the results.
 
 ## Run
 

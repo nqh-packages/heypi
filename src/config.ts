@@ -23,12 +23,33 @@ export type ModelConfig = {
 	name: string;
 };
 
+export type AgentContextInput = {
+	channel: string;
+	actor: string;
+	threadId: string;
+	turnId?: string;
+	inputMessageId?: string;
+	trace?: string;
+};
+
+export type AgentContextBlock =
+	| string
+	| {
+			title?: string;
+			text: string;
+	  };
+
+export type AgentContextProvider = (
+	input: AgentContextInput,
+) => AgentContextBlock | undefined | null | false | Promise<AgentContextBlock | undefined | null | false>;
+
 export type AgentConfig = {
 	id: string;
 	model: ModelConfig;
 	directory: string;
 	systemPrompt?: string;
 	prompt?: string;
+	context?: AgentContextProvider[];
 	skills?: string[];
 	extensions?: string[];
 	tools?: ToolDefinition[];

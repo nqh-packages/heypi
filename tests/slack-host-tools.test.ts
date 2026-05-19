@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
-import { createHostTools, HostStore } from "../examples/slack-devops/host-tools.js";
+import { createHostContext, createHostTools, HostStore } from "../examples/slack-devops/host-tools.js";
 
 async function tempRoot(): Promise<{ path: string; cleanup: () => Promise<void> }> {
 	const path = await mkdtemp(join(tmpdir(), "heypi-host-tools-"));
@@ -76,6 +76,28 @@ test("hosts_upsert returns the public key installation instruction", async () =>
 		assert.match(body, /tell me the key is installed/);
 		assert.match(body, /ssh-ed25519 /);
 		assert.doesNotMatch(body, /PRIVATE KEY/);
+	} finally {
+		await root.cleanup();
+	}
+});
+
+test("host context summarizes configured hosts for the prompt", async () => {
+	const root = await tempRoot();
+	try {
+		const store = new HostStore(root.path);
+		await store.upsert({
+			id: "db-1",
+			address: "203.0.113.20",
+			user: "deploy",
+			tags: ["db", "prod"],
+			aliases: ["primary-db"],
+		});
+		const context = createHostContext({ root: root.path });
+		const out = await context({ channel: "slack:T1:C1", actor: "U1", threadId: "thread-1" });
+		assert.deepEqual(out, {
+			title: "Known hosts",
+			text: "- db-1 deploy@203.0.113.20:22 tags=db,prod aliases=primary-db",
+		});
 	} finally {
 		await root.cleanup();
 	}

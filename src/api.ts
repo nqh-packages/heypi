@@ -1,6 +1,9 @@
 export { createHeypi, type HeypiApp } from "./app.js";
 export {
 	type AgentConfig,
+	type AgentContextBlock,
+	type AgentContextInput,
+	type AgentContextProvider,
 	type ApprovalConfig,
 	type AttachmentConfig,
 	agentFrom,

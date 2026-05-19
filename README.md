@@ -1,3 +1,11 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/heypi-white.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/heypi-black.png">
+    <img alt="heypi" src="docs/assets/heypi-black.png" width="320">
+  </picture>
+</p>
+
 # heypi
 
 Chat agents on top of [Pi](https://github.com/earendil-works/pi).
@@ -89,6 +97,12 @@ agentFrom("./agent", {
 	model: "openai/gpt-5-mini",
 	systemPrompt: "You are a concise DevOps assistant.",
 	prompt: "Prefer safe, auditable actions.",
+	context: [
+		async ({ channel }) => ({
+			title: "Runtime context",
+			text: `Current channel: ${channel}`,
+		}),
+	],
 	skills: ["./shared/skills"],
 	extensions: ["./agent/extensions"],
 	tools: [myTool],
@@ -96,6 +110,7 @@ agentFrom("./agent", {
 ```
 
 Pass `model` explicitly or set `HEYPI_MODEL`. heypi does not choose a provider/model implicitly.
+Use `context` for small dynamic system-prompt blocks such as known hosts, tenant metadata, user profile, or channel policy. Context providers run once per agent turn.
 
 ## Tools And Approvals
 

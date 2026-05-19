@@ -45,7 +45,7 @@ agent/
   extensions/
 ```
 
-`agentFrom()` resolves files and folders at process startup. Missing files are ignored. The model must be passed explicitly or through `HEYPI_MODEL`.
+`agentFrom()` resolves files and folders at process startup. Missing files are ignored. The model must be passed explicitly or through `HEYPI_MODEL`. Programmatic `context` providers run once per turn and append compact dynamic system-prompt blocks before Pi builds the provider request.
 
 ### Adapters
 
