@@ -11,9 +11,11 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the process model, module
 - Pi-backed agent loop via `@mariozechner/pi-coding-agent`
 - Slack adapter with Socket Mode and HTTP receiver modes
 - Telegram long-polling adapter
+- Discord gateway adapter
+- Generic HTTP webhook adapter
 - SQLite store for threads, messages, turns, calls, approvals, scheduled jobs, job runs, and locks
 - Pi-compatible tools: `bash`, `read`, `write`, `edit`, `grep`, `find`, `ls`, `history`
-- Static runtime selection: `just-bash`, `guarded-bash`, or `host-bash`
+- Static runtime selection: `just-bash`, `docker-bash`, `guarded-bash`, or `host-bash`
 - Human approval flow for tool calls that require confirmation
 - Cron and heartbeat jobs for proactive agent turns
 - Runtime-backed attachment handling
@@ -127,13 +129,13 @@ status <call-id>
 cancel <turn-id-or-trace>
 ```
 
-Slack and Telegram also render provider-native buttons.
+Slack, Telegram, and Discord also render provider-native buttons.
 
 See [`docs/EXTENDING.md`](docs/EXTENDING.md) for custom tools, confirmation, and command risk classification.
 
 ## Adapters
 
-Slack and Telegram adapters both handle inbound messages, provider-native approval buttons, progress updates, and outbound attachments.
+Slack, Telegram, and Discord adapters handle inbound messages, provider-native approval buttons, progress updates, and outbound attachments.
 
 ### Slack
 
@@ -206,6 +208,67 @@ See [`docs/TELEGRAM.md`](docs/TELEGRAM.md) for BotFather setup and chat discover
 
 Inbound Telegram messages can be restricted with `allow`. Omitted `chats` and `users` allow all delivered updates for that dimension. `chats` applies to groups/channels only. `allow.dms` defaults to `true`. `trigger` defaults to `"mention"` for groups; accepted private chats always trigger.
 
+### Discord
+
+Discord uses the gateway through `discord.js`:
+
+```ts
+import { discord } from "@hunvreus/heypi";
+
+discord({
+	token: process.env.DISCORD_BOT_TOKEN!,
+	allow: {
+		guilds: ["123456789012345678"],
+		channels: ["234567890123456789"],
+		users: ["345678901234567890"],
+		dms: true,
+	},
+	trigger: "mention",
+	streaming: true,
+	progress: { message: "Thinking..." },
+});
+```
+
+See [`docs/DISCORD.md`](docs/DISCORD.md) for bot setup, intents, invite URLs, and ID discovery.
+
+Inbound Discord messages can be restricted with `allow`. Omitted `guilds`, `channels`, and `users` allow all delivered events for that dimension. `channels` applies to non-DM channels only. `allow.dms` defaults to `true`. `trigger` defaults to `"mention"` for guild channels; accepted DMs always trigger.
+
+### Webhook
+
+Webhook exposes a generic JSON HTTP adapter for internal systems:
+
+```ts
+import { webhook } from "@hunvreus/heypi";
+
+webhook({
+	secret: process.env.HEYPI_WEBHOOK_SECRET!,
+	port: 3000,
+	host: "127.0.0.1",
+	path: "/webhook",
+	replyHosts: ["internal.example.com"],
+});
+```
+
+Send a message:
+
+```bash
+curl -X POST http://localhost:3000/webhook/messages \
+  -H "authorization: Bearer $HEYPI_WEBHOOK_SECRET" \
+  -H "content-type: application/json" \
+  -d '{"user":"alice@example.com","text":"Start incident review"}'
+```
+
+Missing `threadId` creates a new server-side thread and returns it with a `runId`. Follow-ups, status checks, approvals, denials, and cancels reuse that `threadId`.
+
+```bash
+curl http://localhost:3000/webhook/threads/<threadId>/runs/<runId> \
+  -H "authorization: Bearer $HEYPI_WEBHOOK_SECRET"
+```
+
+Webhook is async-first: requests return `202` while the turn runs. Pass `replyUrl` to receive a callback when the run finishes, or pass `sync: true` for short calls with a strict timeout. `replyUrl` hosts must be listed in `replyHosts`; omitted `replyHosts` rejects callbacks. Webhook binds to `127.0.0.1` by default; set `host: "0.0.0.0"` explicitly only behind a gateway or firewall.
+
+See [`docs/WEBHOOK.md`](docs/WEBHOOK.md) for auth, threading, async callbacks, sync mode, and approvals.
+
 Streaming is opt-in. Use `streaming: true` for the defaults, or pass `{ intervalMs, minChars, maxFailures }` to tune it. When enabled, heypi posts a draft reply and edits it at a bounded cadence while Pi emits text deltas. Confirmed tool calls stop the draft stream before approval buttons are sent; after approval, continuation can start a new draft stream. Progress messages are suppressed while streaming is active to avoid duplicate visible replies.
 
 Adapter delivery is serialized by default and retries provider rate limits with backoff. Ambiguous timeouts are not retried for non-idempotent sends such as new chat messages or file uploads, because the provider may already have accepted the request.
@@ -224,7 +287,7 @@ Custom adapters implement:
 ```ts
 type Adapter = {
 	name?: string;
-	start(input: { handler: Handler; logger: Logger; attachments?: AttachmentStore }): Promise<void>;
+	start(input: { handler: Handler; status?: Status; logger: Logger; attachments?: AttachmentStore }): Promise<void>;
 	send?(target: AdapterTarget, out: Outbound, input?: AdapterStart): Promise<void>;
 	stop?(): Promise<void>;
 };
@@ -278,6 +341,7 @@ heypi ships a separate CLI for setup checks and job inspection:
 pnpm exec heypi check --env .env --db ./heypi.db
 pnpm exec heypi slack check --env examples/slack-devops/.env
 pnpm exec heypi telegram observe --env examples/telegram-workout/.env
+pnpm exec heypi discord observe --env .env
 pnpm exec heypi jobs list --db examples/telegram-workout/heypi.db
 ```
 
@@ -289,7 +353,7 @@ Runtime selection is static per app.
 
 ```ts
 runtime: {
-	name: "just-bash", // "guarded-bash" | "host-bash"
+	name: "just-bash", // "docker-bash" | "guarded-bash" | "host-bash"
 	root: workspace("./workspace"),
 	maxConcurrent: 12,
 	maxConcurrentPerChat: 1,
@@ -303,17 +367,23 @@ runtime: {
 		python: false,
 		javascript: false,
 	},
+	docker: {
+		image: "ubuntu:24.04",
+		network: "none",
+		// Defaults to the current uid:gid when available.
+		user: "1000:1000",
+	},
 	hostEnv: {
 		CI: "true",
 	},
 }
 ```
 
-Command policy can be customized separately from runtime selection:
+Command approval policy can be customized separately from runtime selection:
 
 ```ts
-policy: {
-	command: {
+approval: {
+	commands: {
 		allow: [/^curl -I https:\/\/status\.example\.com\b/],
 		approve: [/\bmake deploy\b/],
 		block: [/\bgh repo delete\b/],
@@ -323,13 +393,13 @@ policy: {
 
 Custom `block` patterns and built-in hard blocks win first. Custom `allow` patterns can bypass approval patterns, but cannot bypass block patterns.
 
-`just-bash` is the default production runtime. `guarded-bash` and `host-bash` execute host bash from the configured workspace root; they are not OS isolation. Host runtimes receive a minimal environment by default; pass `hostEnv` to expose specific variables.
+`just-bash` is the default production runtime. `docker-bash` runs `bash` in `docker run --rm` with the workspace mounted at `/workspace`; file tools still use heypi's bounded runtime file operations. Docker commands run as the current uid/gid by default when Node exposes them; set `docker.user: false` to disable that or pass an explicit user string. Custom `docker.args` can weaken or defeat container isolation, so review them carefully. `guarded-bash` and `host-bash` execute host bash from the configured workspace root; they are not OS isolation. Host runtimes receive a minimal environment by default; pass `hostEnv` to expose specific variables.
 
-Regex command policy is a guardrail, not a sandbox. Use `just-bash` for team-facing agents.
+Regex command policy is a guardrail, not a sandbox. Use `just-bash` or `docker-bash` for team-facing agents.
 
-Runtime file tools enforce size limits by default: 1 MB per file, 5 MB per scan, and 10,000 traversed entries. Override `runtime.limits` for larger workspaces.
+Runtime file tools enforce path containment, symlink escape checks, and size limits by default: 1 MB per file, 5 MB per scan, and 10,000 traversed entries. Override `runtime.limits` for larger workspaces.
 
-Attachments are limited to 25 MB by default. Override with `attachment: { maxBytes }`, or pass a custom `attachments` store.
+Attachments are limited to 25 MB by default, including streamed provider downloads. Override with `attachments: { maxBytes }`, or pass `attachments: { store }` for custom storage.
 
 ## Shutdown
 
@@ -358,7 +428,7 @@ Cloudflare Workers and other serverless Fetch runtimes are not supported yet. Th
 
 ## Examples
 
-- [`examples/slack-devops`](examples/slack-devops): Slack DevOps assistant with runbook search, governed bash, approvals, and a confirmed custom paging tool.
+- [`examples/slack-devops`](examples/slack-devops): Slack incident-response assistant with runbook search, governed bash, approvals, and file-backed server inventory.
 - [`examples/telegram-workout`](examples/telegram-workout): Telegram fitness coach with onboarding, saved profile/plan, daily heartbeat check-ins, and a local workout log.
 
 ## Why heypi?

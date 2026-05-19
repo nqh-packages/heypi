@@ -1,6 +1,6 @@
 # Slack DevOps
 
-Slack DevOps assistant with runbook search, governed bash, approvals, and a confirmed custom paging tool.
+Slack incident-response assistant for a small fictional Atlas API platform. It demonstrates scoped Slack behavior, runbook search, governed bash, approvals, and server inventory from files.
 
 This example uses Slack Socket Mode so it can run locally without a public HTTPS URL.
 
@@ -17,6 +17,11 @@ Required env vars:
 SLACK_BOT_TOKEN=...
 SLACK_APP_TOKEN=...
 OPENAI_API_KEY=...
+```
+
+Optional env vars:
+
+```bash
 HEYPI_APPROVERS=U123456,U234567
 HEYPI_SLACK_TEAMS=
 HEYPI_SLACK_CHANNELS=
@@ -32,18 +37,22 @@ This example enables `streaming: true`, so Slack replies are posted as draft mes
 Check setup:
 
 ```bash
-pnpm exec heypi slack check --env examples/slack-devops/.env
-pnpm exec heypi slack manifest --url https://<host>/slack/events
+pnpm heypi slack check --env examples/slack-devops/.env
+pnpm heypi slack manifest --url https://<host>/slack/events
 ```
 
 Try:
 
 ```text
 help
-bash echo hello
-Search runbooks for latency
-Page the API team because latency is above the runbook threshold
+Search runbooks for server inventory
+Which servers run atlas-api?
+Search runbooks for gateway 5xx
+We are seeing elevated p95 latency on atlas-api
+bash find . -maxdepth 3 -type f
 ```
+
+The demo knows servers from `examples/slack-devops/agent/runbooks/server-inventory.md`. It does not discover live infrastructure.
 
 ## Slack HTTP Mode
 

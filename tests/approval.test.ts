@@ -421,8 +421,13 @@ class FakeApprovals implements Approvals {
 		return this.rows.find((row) => row.channel === channel && row.id === id && row.state === "pending");
 	}
 
-	async listPending(input: { threadId?: string } = {}): Promise<Approval[]> {
-		return this.rows.filter((row) => row.state === "pending" && (!input.threadId || row.threadId === input.threadId));
+	async listPending(input: { threadId?: string; turnId?: string } = {}): Promise<Approval[]> {
+		return this.rows.filter(
+			(row) =>
+				row.state === "pending" &&
+				(!input.threadId || row.threadId === input.threadId) &&
+				(!input.turnId || row.turnId === input.turnId),
+		);
 	}
 
 	async resolve(id: string, state: "approved" | "denied", actor: string): Promise<boolean> {

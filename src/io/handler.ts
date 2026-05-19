@@ -5,7 +5,7 @@ import type { CallRunner } from "../core/calls.js";
 import { helpReply, renderThreadStatus } from "../core/format.js";
 import { normalizeText, parseIntent } from "../core/intent.js";
 import { type Logger, logError, logger, message, redact, userError } from "../core/log.js";
-import type { ApprovalPrompt, ReplyAttachment } from "../core/types.js";
+import type { ApprovalPrompt, Intent, ReplyAttachment } from "../core/types.js";
 import type { Agent } from "../runtime/agent.js";
 import { continueTool, saveReply } from "../store/transcript.js";
 import type { Store } from "../store/types.js";
@@ -38,8 +38,28 @@ export type Outbound = {
 
 export type Handler = (input: Inbound) => Promise<Outbound | undefined>;
 
+export type StatusResult = {
+	ok: boolean;
+	threadId: string;
+	runId: string;
+	status: string;
+	text?: string;
+	approval?: ApprovalPrompt;
+	error?: string;
+	createdAt?: number;
+	updatedAt?: number;
+};
+
+export type Status = (input: {
+	provider: string;
+	team?: string;
+	threadId: string;
+	runId: string;
+}) => Promise<StatusResult | undefined>;
+
 export type AdapterStart = {
 	handler: Handler;
+	status?: Status;
 	logger: Logger;
 	attachments?: AttachmentStore;
 };
@@ -188,7 +208,7 @@ export function createHandler(input: {
 				trace,
 				agent: agentId,
 				provider: msg.provider,
-				channel: msg.channel,
+				channel: scopeKey(msg),
 				thread: thread.id,
 				turn: turn.id,
 				message: inbound.row.id,
@@ -207,7 +227,7 @@ export function createHandler(input: {
 								threadId: thread.id,
 								inputMessageId: inbound.row.id,
 								turnId: currentTurn.id,
-								channel: intent.channel,
+								channel: scopeKey(msg),
 								actor: intent.actor,
 								trace,
 								text: messageText,
@@ -215,7 +235,7 @@ export function createHandler(input: {
 								signal: currentRun.signal,
 								stream,
 							})
-						: await input.callRunner.handle(intent, base, currentRun.signal);
+						: await input.callRunner.handle(scopedIntent(intent as CallIntent, msg), base, currentRun.signal);
 			if (currentRun.signal.aborted) reply = { text: "cancelled" };
 			const targetThreadId = reply.continuation?.threadId;
 			if (reply.continuation) {
@@ -223,7 +243,7 @@ export function createHandler(input: {
 					store: input.store,
 					agent: input.agent,
 					provider: msg.provider,
-					channel: msg.channel,
+					channel: scopeKey(msg),
 					actor: msg.actor,
 					trace,
 					turn: currentTurn.id,
@@ -323,12 +343,59 @@ export function createHandler(input: {
 	};
 }
 
+export function createStatus(input: { agentId?: string; store: Store }): Status {
+	const agentId = input.agentId ?? "default";
+	return async ({ provider, team, threadId, runId }) => {
+		const thread = await input.store.threads.getByKey(agentId, provider, team, threadId);
+		if (!thread) return undefined;
+		const turn = await input.store.turns.getByTrace(thread.id, runId);
+		if (!turn) return undefined;
+		const result = turn.resultMessageId ? await input.store.messages.get(turn.resultMessageId) : undefined;
+		const approval = (await input.store.approvals.listPending({ threadId: thread.id, turnId: turn.id, limit: 1 }))[0];
+		return {
+			ok: turn.state !== "failed",
+			threadId,
+			runId,
+			status: approval ? "pending_approval" : turn.state,
+			text: result ? redact(result.text) : undefined,
+			approval: approval
+				? {
+						id: approval.id,
+						callId: approval.callId,
+						command: redact(approval.command),
+						runtime: approval.runtime,
+						reason: approval.reason,
+						allowed: [],
+					}
+				: undefined,
+			error: turn.state === "failed" && result ? redact(result.text) : undefined,
+			createdAt: turn.createdAt,
+			updatedAt: turn.updatedAt,
+		};
+	};
+}
+
 async function transaction<T>(store: Store, fn: (store: Store) => Promise<T>): Promise<T> {
 	return store.transaction ? store.transaction(fn) : fn(store);
 }
 
 function requiresThreadLock(kind: string): boolean {
 	return kind !== "help" && kind !== "status";
+}
+
+type CallIntent = Exclude<Intent, { kind: "ask" | "help" | "cancel" | "thread_status" }>;
+
+function scopedIntent(intent: CallIntent, msg: Inbound): CallIntent {
+	const channel = scopeKey(msg);
+	if (intent.kind === "bash") return { ...intent, channel };
+	if (intent.kind === "approve") return { ...intent, channel };
+	if (intent.kind === "deny") return { ...intent, channel };
+	if (intent.kind === "status") return { ...intent, channel };
+	return intent;
+}
+
+function scopeKey(msg: Pick<Inbound, "provider" | "team" | "channel">): string {
+	return `${msg.provider}:${msg.team ?? ""}:${msg.channel}`;
 }
 
 function data(input: unknown, trace: string, attachments?: Attachment[], model?: ModelConfig): Record<string, unknown> {

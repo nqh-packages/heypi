@@ -60,20 +60,27 @@ export type RuntimeConfig = {
 	maxConcurrentPerChat?: number;
 	limits?: RuntimeLimits;
 	justBash?: JustBashConfig;
+	docker?: DockerConfig;
 	hostEnv?: Record<string, string>;
 };
 
+export type DockerConfig = {
+	image?: string;
+	network?: "none" | "host" | "bridge" | string;
+	env?: Record<string, string>;
+	args?: string[];
+	user?: string | false;
+};
+
 export type AttachmentConfig = {
+	store?: AttachmentStore;
 	maxBytes?: number;
 };
 
 export type ApprovalConfig = {
 	approvers?: string[];
 	expiresInMs?: number;
-};
-
-export type PolicyConfig = {
-	command?: CommandPolicyConfig;
+	commands?: CommandPolicyConfig;
 };
 
 export type HeypiConfig = {
@@ -81,9 +88,7 @@ export type HeypiConfig = {
 	adapters: Adapter[];
 	agent: AgentConfig;
 	runtime: RuntimeConfig;
-	policy?: PolicyConfig;
-	attachments?: AttachmentStore;
-	attachment?: AttachmentConfig;
+	attachments?: AttachmentConfig;
 	approval?: ApprovalConfig;
 	scheduler?: Omit<SchedulerConfig, "jobs">;
 	jobs?: SchedulerConfig["jobs"];

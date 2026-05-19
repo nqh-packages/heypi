@@ -50,13 +50,13 @@ test("Slack HTTP mode requires a signing secret at runtime", () => {
 	assert.throws(
 		() =>
 			slack({
-				botToken: "xoxb-test",
+				botToken: "bot-token",
 				mode: "http",
 				signingSecret: "",
 			}),
 		/Slack HTTP mode requires signingSecret/,
 	);
-	assert.equal(slack({ botToken: "xoxb-test", mode: "socket", appToken: "xapp-test" }).name, "slack");
+	assert.equal(slack({ botToken: "bot-token", mode: "socket", appToken: "app-token" }).name, "slack");
 });
 
 test("Telegram allowlists default to accepting delivered message events", () => {

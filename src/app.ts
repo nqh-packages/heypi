@@ -4,7 +4,7 @@ import { CallRunner } from "./core/calls.js";
 import { logger } from "./core/log.js";
 import { createScheduler } from "./core/scheduler.js";
 import { runtimeAttachments } from "./io/attachments.js";
-import { createHandler } from "./io/handler.js";
+import { createHandler, createStatus } from "./io/handler.js";
 import { createRuntime } from "./runtime/index.js";
 import { PiAgent } from "./runtime/pi-agent.js";
 import { Queue } from "./runtime/queue.js";
@@ -24,7 +24,7 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 		app: process.cwd(),
 		agent: config.agent.directory,
 	});
-	const attachments = config.attachments ?? runtimeAttachments(runtime, config.attachment);
+	const attachments = config.attachments?.store ?? runtimeAttachments(runtime, config.attachments);
 	const queue = new Queue({
 		maxConcurrent: config.runtime.maxConcurrent ?? 12,
 		maxPerChat: config.runtime.maxConcurrentPerChat ?? 1,
@@ -37,7 +37,7 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 		config.approval,
 		log,
 		config.store.transaction,
-		config.policy?.command,
+		config.approval?.commands,
 	);
 	for (const tool of config.agent.tools ?? []) {
 		const execute = toolRunner(tool);
@@ -59,6 +59,7 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 		active,
 		logger: log,
 	});
+	const status = createStatus({ agentId: config.agent.id, store: config.store });
 	const starts = new Map();
 	const scheduler = createScheduler({
 		agent: config.agent.id,
@@ -82,7 +83,7 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 		const started: typeof config.adapters = [];
 		try {
 			for (const adapter of config.adapters) {
-				const start = { handler, logger: log, attachments };
+				const start = { handler, status, logger: log, attachments };
 				starts.set(adapter, start);
 				await adapter.start(start);
 				started.push(adapter);

@@ -3,11 +3,18 @@ import { test } from "node:test";
 import { consoleLogger, redact, userError } from "../src/core/log.js";
 
 test("redact removes provider secrets from logged errors", () => {
-	assert.equal(redact("bad key sk-proj-abc123"), "bad key sk-<redacted>");
-	assert.equal(redact("bad token xoxb-abc123"), "bad token xoxb-<redacted>");
-	assert.equal(redact("bad app xapp-abc123"), "bad app xapp-<redacted>");
-	assert.equal(redact("bad aws AKIA1234567890ABCDEF"), "bad aws AKIA<redacted>");
-	assert.equal(redact("bad jwt eyJabc.def_ghi.jkl-mno"), "bad jwt jwt:<redacted>");
+	const openai = "sk" + "-proj-abc123";
+	const slackBot = "xoxb" + "-abc123";
+	const slackApp = "xapp" + "-abc123";
+	const discord = ["MTAxNTIzNDU2Nzg5MDEyMzQ1Ng", "GxYxgT", "7DqQjI3jVx-NkY8ZqX123456789"].join(".");
+	const aws = "AKIA" + "1234567890ABCDEF";
+	const jwt = ["eyJabc", "def_ghi", "jkl-mno"].join(".");
+	assert.equal(redact(`bad key ${openai}`), "bad key sk-<redacted>");
+	assert.equal(redact(`bad token ${slackBot}`), "bad token xoxb-<redacted>");
+	assert.equal(redact(`bad app ${slackApp}`), "bad app xapp-<redacted>");
+	assert.equal(redact(`bad discord ${discord}`), "bad discord <redacted>");
+	assert.equal(redact(`bad aws ${aws}`), "bad aws AKIA<redacted>");
+	assert.equal(redact(`bad jwt ${jwt}`), "bad jwt jwt:<redacted>");
 });
 
 test("user errors are generic", () => {
@@ -22,10 +29,12 @@ test("pretty logger writes single-line redacted fields", () => {
 		lines.push(String(message));
 	};
 	try {
+		const openai = "sk" + "-proj-abc123";
+		const slack = "xoxb" + "-abc123";
 		consoleLogger({ level: "debug", format: "pretty" }).info("model.error", {
 			agent: "agent",
-			error: "bad key sk-proj-abc123",
-			nested: { token: "xoxb-abc123" },
+			error: `bad key ${openai}`,
+			nested: { token: slack },
 			text: "hello world",
 		});
 	} finally {
@@ -43,8 +52,9 @@ test("json logger writes structured redacted fields", () => {
 		lines.push(String(message));
 	};
 	try {
+		const slack = "xapp" + "-abc123";
 		consoleLogger({ format: "json" }).error("handler.error", {
-			error: "bad token xapp-abc123",
+			error: `bad token ${slack}`,
 		});
 	} finally {
 		console.error = error;

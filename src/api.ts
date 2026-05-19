@@ -4,11 +4,11 @@ export {
 	type ApprovalConfig,
 	type AttachmentConfig,
 	agentFrom,
+	type DockerConfig,
 	type HeypiConfig,
 	type JustBashConfig,
 	type ModelConfig,
 	modelConfig,
-	type PolicyConfig,
 	type RuntimeConfig,
 	type RuntimeLimits,
 } from "./config.js";
@@ -17,7 +17,14 @@ export { classifyCommand } from "./core/policy.js";
 export type { CommandPolicyConfig, CommandRisk, Confirm, ReplyAttachment } from "./core/types.js";
 export { type Attachment, type AttachmentStore, attachmentPrompt, runtimeAttachments } from "./io/attachments.js";
 export type { DeliveryConfig } from "./io/delivery.js";
-export type { Adapter, AdapterTarget, Handler, Inbound, Outbound } from "./io/handler.js";
+export {
+	type DiscordAllow,
+	type DiscordConfig,
+	type DiscordProgress,
+	type DiscordTrigger,
+	discord,
+} from "./io/discord.js";
+export type { Adapter, AdapterTarget, Handler, Inbound, Outbound, Status, StatusResult } from "./io/handler.js";
 export type { ReplyStream, ReplyStreamConfig, ReplyStreamOption } from "./io/reply-stream.js";
 export {
 	type SlackAllow,
@@ -36,6 +43,7 @@ export {
 	type TelegramTrigger,
 	telegram,
 } from "./io/telegram.js";
+export { type WebhookConfig, type WebhookMessage, webhook } from "./io/webhook.js";
 export type { JobConfig, JobKind, JobSchedule, JobScope, JobState, JobTarget } from "./job.js";
 export { createRuntime, runtimeName, workspace } from "./runtime/index.js";
 export type { Capabilities, Runtime, RuntimeName } from "./runtime/types.js";

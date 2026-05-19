@@ -33,6 +33,11 @@ test("public package entrypoint supports a minimal app config", async () => {
 			logger: consoleLogger({ level: "error", format: "pretty" }),
 			adapters: [adapter],
 			agent: agentFrom("./examples/slack-devops/agent", { model: "openai/gpt-5-mini", tools: [lookup] }),
+			approval: {
+				commands: {
+					allow: [/^curl -I /],
+				},
+			},
 			runtime: {
 				name: "just-bash",
 				root: workspace(join(root, "workspace")),
@@ -62,7 +67,7 @@ test("createHeypi passes injected attachment store to adapters", async () => {
 			store: sqliteStore({ path: join(root, "heypi.db") }),
 			logger: consoleLogger({ level: "error", format: "pretty" }),
 			adapters: [adapter],
-			attachments,
+			attachments: { store: attachments },
 			agent: agentFrom("./examples/slack-devops/agent", { model: "openai/gpt-5-mini" }),
 			runtime: {
 				name: "host-bash",

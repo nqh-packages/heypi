@@ -66,7 +66,7 @@ heypi registers Pi-compatible runtime tools:
 bash, read, write, edit, grep, find, ls, history
 ```
 
-`bash` is governed through command risk classification, approval, audit rows, queueing, and the configured runtime. `read`, `write`, `edit`, `grep`, `find`, and `ls` run inside the runtime workspace and enforce runtime limits. `write` and `edit` do not require approval by default.
+`bash` is governed through command risk classification, approval, audit rows, queueing, and the configured runtime. `read`, `write`, `edit`, `grep`, `find`, and `ls` run inside the runtime workspace and enforce path containment plus runtime limits. `write` and `edit` do not require approval by default.
 
 ## Command Risk
 
@@ -74,13 +74,13 @@ heypi classifies shell commands before running the built-in `bash` tool. The cla
 
 Default hard blocks include commands such as `rm -rf /`, `mkfs`, `shutdown`, and `reboot`. Default approval patterns include commands such as `curl`, `wget`, `ssh`, `docker`, `kubectl`, `terraform`, `helm`, `git push`, and package publishing.
 
-Customize command classification with top-level `policy.command`:
+Customize command classification with `approval.commands`:
 
 ```ts
 createHeypi({
 	// ...
-	policy: {
-		command: {
+	approval: {
+		commands: {
 			allow: [/^curl -I https:\/\/status\.example\.com\b/],
 			approve: [/\bmake deploy\b/],
 			block: [/\bgh repo delete\b/],
@@ -126,5 +126,5 @@ const deploy = tool<{ command: string }>({
 
 - Custom adapters implement the `Adapter` interface.
 - Custom stores implement the `Store` interface.
-- Custom attachment stores implement `AttachmentStore`.
+- Custom attachment stores implement `AttachmentStore` and are configured with `attachments: { store }`.
 - Runtime behavior is configured through `runtime`, including `justBash`, `hostEnv`, timeouts, concurrency, and file limits.

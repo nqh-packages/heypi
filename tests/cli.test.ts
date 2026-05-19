@@ -25,7 +25,7 @@ test("cli check loads env file and validates runtime root", async () => {
 	const root = await mkdtemp(join(tmpdir(), "heypi-cli-check-"));
 	try {
 		const env = join(root, ".env");
-		await writeFile(env, "OPENAI_API_KEY=sk-test\n", "utf8");
+		await writeFile(env, "OPENAI_API_KEY=openai-api-key\n", "utf8");
 		const out = cli(["check", "--env", env, "--runtime-root", root]);
 		assert.match(out, /ok: node /);
 		assert.match(out, /ok: OPENAI_API_KEY present/);
@@ -55,6 +55,7 @@ test("cli db migrate and jobs commands operate on sqlite store", async () => {
 		});
 
 		assert.match(cli(["jobs", "list", "--db", path]), /daily\theartbeat\tactive/);
+		assert.match(cli(["jobs", "show", "daily", "--db", path]), /id: daily/);
 		const json = JSON.parse(cli(["jobs", "list", "--db", path, "--json"])) as Array<{ id: string }>;
 		assert.deepEqual(
 			json.map((job) => job.id),
@@ -73,11 +74,12 @@ test("cli db migrate and jobs commands operate on sqlite store", async () => {
 });
 
 test("cli errors do not echo supplied provider tokens", () => {
-	const result = spawnSync(process.execPath, [CLI, "slack", "check", "--bot-token", "xoxb-secret-token"], {
+	const token = "xoxb" + "-secret-token";
+	const result = spawnSync(process.execPath, [CLI, "slack", "check", "--bot-token", token], {
 		cwd: process.cwd(),
 		encoding: "utf8",
 	});
 	assert.notEqual(result.status, 0);
 	assert.match(result.stderr, /Missing --app-token or SLACK_APP_TOKEN/);
-	assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /xoxb-secret-token/);
+	assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, new RegExp(token));
 });

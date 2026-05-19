@@ -41,7 +41,7 @@ export class CallRunner {
 		private readonly approval: ApprovalConfig = {},
 		private readonly log: Logger = logger,
 		private readonly transaction?: Store["transaction"],
-		private readonly policy: CommandPolicyConfig = {},
+		private readonly commands: CommandPolicyConfig = {},
 	) {}
 
 	register(tool: string, execute: ToolExecute): void {
@@ -67,7 +67,7 @@ export class CallRunner {
 		signal?: AbortSignal,
 	): Promise<Reply> {
 		if (!this.runtime.bash) throw new Error(`runtime ${this.runtime.name} does not support bash`);
-		const risk = classifyCommand(command, this.policy);
+		const risk = classifyCommand(command, this.commands);
 		this.log.debug("call.policy", {
 			...context,
 			channel,

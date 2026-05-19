@@ -139,6 +139,7 @@ export interface Threads {
 		actor?: string;
 		key: string;
 	}): Promise<Thread>;
+	getByKey(agent: string, provider: string, team: string | undefined, key: string): Promise<Thread | undefined>;
 	list(input?: {
 		agent?: string;
 		providers?: string[];
@@ -151,6 +152,7 @@ export interface Threads {
 
 /** Message transcript store. Provides append-once semantics for provider retry dedupe. */
 export interface Messages {
+	get(id: string): Promise<Message | undefined>;
 	create(input: {
 		threadId: string;
 		provider: string;
@@ -204,6 +206,7 @@ export interface Turns {
 		trace?: string;
 		state?: TurnState;
 	}): Promise<Turn>;
+	getByTrace(threadId: string, trace: string): Promise<Turn | undefined>;
 	listForThread(threadId: string, input?: { limit?: number }): Promise<Turn[]>;
 	finish(id: string, input: { state: TurnState; resultMessageId?: string }): Promise<void>;
 }
@@ -251,7 +254,7 @@ export interface Approvals {
 	get(id: string): Promise<Approval | undefined>;
 	getByChannel(channel: string, id: string): Promise<Approval | undefined>;
 	getPending(channel: string, id: string): Promise<Approval | undefined>;
-	listPending(input?: { threadId?: string; limit?: number }): Promise<Approval[]>;
+	listPending(input?: { threadId?: string; turnId?: string; limit?: number }): Promise<Approval[]>;
 	resolve(id: string, state: "approved" | "denied", actor: string): Promise<boolean>;
 }
 

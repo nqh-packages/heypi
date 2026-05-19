@@ -2,6 +2,12 @@
 import { existsSync, statSync } from "node:fs";
 import { loadEnvFile } from "node:process";
 import { cac } from "cac";
+import {
+	discordCheck as checkDiscord,
+	discordChannels,
+	discordInviteUrl,
+	discordObserve as observeDiscord,
+} from "./io/discord-discovery.js";
 import { openDb } from "./store/db.js";
 import { migrate } from "./store/migrate.js";
 import { JobRepo, JobRunRepo } from "./store/repo-job.js";
@@ -65,7 +71,22 @@ function buildCli() {
 				throw new Error(`Unknown command: telegram ${action}`);
 			})(flags),
 		);
-	cli.command("jobs <action> [id]", "Job commands: list, run, pause, resume")
+	cli.command("discord <action>", "Discord commands: check, observe, channels, invite, env")
+		.option("--env <path>", "Load env file")
+		.option("--token <token>", "Discord bot token")
+		.option("--client-id <id>", "Discord application/client ID")
+		.option("--timeout <seconds>", "Timeout in seconds")
+		.action((action: string, flags: Flags) =>
+			withEnv((input) => {
+				if (action === "check") return discordCheck(input);
+				if (action === "observe") return discordObserve(input);
+				if (action === "channels") return discordChannelsList(input);
+				if (action === "invite") return discordInvite(input);
+				if (action === "env") return discordEnv();
+				throw new Error(`Unknown command: discord ${action}`);
+			})(flags),
+		);
+	cli.command("jobs <action> [id]", "Job commands: list, show, run, pause, resume")
 		.option("--db <path>", "SQLite database path")
 		.option("--limit <count>", "Maximum jobs to list")
 		.option("--json", "Print JSON")
@@ -73,6 +94,7 @@ function buildCli() {
 			withEnv((input) => {
 				if (action === "list") return jobsList(input);
 				if (!id) throw new Error(`Missing job id for jobs ${action}`);
+				if (action === "show") return jobsShow(input, id);
 				if (action === "run") return jobsRun(input, id);
 				if (action === "pause") return jobsState(input, id, "paused");
 				if (action === "resume") return jobsState(input, id, "active");
@@ -166,8 +188,8 @@ settings:
 }
 
 function slackEnv(): void {
-	line(`SLACK_BOT_TOKEN=xoxb-...
-SLACK_APP_TOKEN=xapp-... # Socket Mode only`);
+	line(`SLACK_BOT_TOKEN=<slack-bot-token>
+SLACK_APP_TOKEN=<slack-app-token> # Socket Mode only`);
 }
 
 async function telegramCheck(flags: Flags): Promise<void> {
@@ -202,6 +224,45 @@ async function telegramObserve(flags: Flags): Promise<void> {
 	throw new Error("Timed out waiting for Telegram message");
 }
 
+async function discordCheck(flags: Flags): Promise<void> {
+	const token = secret(flags, "token", "DISCORD_BOT_TOKEN");
+	const identity = await checkDiscord(token);
+	line(ok(`Discord auth ok: id=${identity.id} username=${identity.username}`));
+	line(`invite: ${discordInviteUrl(identity.id)}`);
+}
+
+async function discordObserve(flags: Flags): Promise<void> {
+	const token = secret(flags, "token", "DISCORD_BOT_TOKEN");
+	const timeout = numberFlag(flags, "timeout", 60);
+	line("Waiting for a Discord message. Send a DM or post in a channel the bot can read.");
+	const found = await observeDiscord(token, timeout);
+	line(ok(`Observed ${found.dm ? "dm" : "channel"}: ${found.channelName ?? found.channel}`));
+	if (found.guild) line(`guild: ${found.guild}${found.guildName ? ` (${found.guildName})` : ""}`);
+	line(`channel: ${found.channel}${found.channelName ? ` (${found.channelName})` : ""}`);
+	line(`user: ${found.user}${found.userName ? ` (${found.userName})` : ""}`);
+	line(`target: { adapter: "discord", channel: "${found.channel}" }`);
+}
+
+async function discordChannelsList(flags: Flags): Promise<void> {
+	const token = secret(flags, "token", "DISCORD_BOT_TOKEN");
+	const channels = await discordChannels(token);
+	if (!channels.length) return line("No Discord text channels visible to the bot.");
+	for (const channel of channels) {
+		line(`${channel.guild}\t${channel.channel}\t${channel.guildName} #${channel.channelName}`);
+	}
+}
+
+function discordInvite(flags: Flags): void {
+	const clientId = stringFlag(flags, "client-id") ?? process.env.DISCORD_CLIENT_ID;
+	if (!clientId) throw new Error("Missing --client-id or DISCORD_CLIENT_ID");
+	line(discordInviteUrl(clientId));
+}
+
+function discordEnv(): void {
+	line(`DISCORD_BOT_TOKEN=...
+DISCORD_CLIENT_ID=... # invite URL helper only`);
+}
+
 async function jobsList(flags: Flags): Promise<void> {
 	const repos = jobRepos(flags);
 	const jobs = await repos.jobs.list({ limit: numberFlag(flags, "limit", 100) });
@@ -233,6 +294,29 @@ async function jobsState(flags: Flags, id: string, state: "active" | "paused"): 
 	const repos = jobRepos(flags);
 	await repos.jobs.setState(id, state);
 	line(ok(`job ${id} ${state}`));
+}
+
+async function jobsShow(flags: Flags, id: string): Promise<void> {
+	const repos = jobRepos(flags);
+	const job = await repos.jobs.get(id);
+	if (!job) throw new Error(`job not found: ${id}`);
+	const last = await repos.runs.lastForJob(id);
+	const row = { ...job, lastRun: last ?? null };
+	if (booleanFlag(flags, "json")) return line(JSON.stringify(row, null, 2));
+	line(
+		[
+			`id: ${job.id}`,
+			`kind: ${job.kind}`,
+			`state: ${job.state}`,
+			`next: ${fmtTime(job.nextAt)}`,
+			`last: ${fmtTime(job.lastAt)}`,
+			`idle_ms: ${job.idleMs ?? "-"}`,
+			`target: ${job.target ?? "-"}`,
+			`scope: ${job.scope ?? "-"}`,
+			`prompt: ${job.prompt}`,
+			`last_run: ${last ? `${last.state}/${last.deliveryState}` : "-"}`,
+		].join("\n"),
+	);
 }
 
 async function jobsRun(flags: Flags, id: string): Promise<void> {
@@ -316,7 +400,11 @@ Usage:
   heypi slack env
   heypi telegram check [--env .env]
   heypi telegram observe [--env .env] [--timeout 60]
+  heypi discord check [--env .env]
+  heypi discord observe [--env .env] [--timeout 60]
+  heypi discord channels [--env .env]
   heypi jobs list --db heypi.db [--json]
+  heypi jobs show <id> --db heypi.db [--json]
   heypi jobs run <id> --db heypi.db
   heypi jobs pause <id> --db heypi.db
   heypi jobs resume <id> --db heypi.db`;

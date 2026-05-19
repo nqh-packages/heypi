@@ -1,5 +1,5 @@
 const SECRET =
-	/(?:sk|xox[baprs]?|xapp)-[A-Za-z0-9_*.-]+|gh[pousr]_[A-Za-z0-9_]+|(?:AKIA|ASIA)[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
+	/(?:sk|xox[baprs]?|xapp)-[A-Za-z0-9_*.-]+|\b[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{27,}\b|gh[pousr]_[A-Za-z0-9_]+|(?:AKIA|ASIA)[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
 
 export type Level = "debug" | "info" | "warn" | "error";
 export type Format = "pretty" | "json";
@@ -47,6 +47,7 @@ export function redact(text: string): string {
 function prefix(value: string): string {
 	if (value.startsWith("eyJ")) return "jwt:";
 	if (value.startsWith("AKIA") || value.startsWith("ASIA")) return value.slice(0, 4);
+	if (value.includes(".")) return "";
 	const dash = value.indexOf("-");
 	if (dash > 0) return value.slice(0, dash + 1);
 	const underscore = value.indexOf("_");

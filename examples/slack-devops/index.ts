@@ -1,8 +1,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadEnvFile } from "node:process";
-import { agentFrom, consoleLogger, createHeypi, slack, sqliteStore, tool, workspace } from "@hunvreus/heypi";
-import { Type } from "@sinclair/typebox";
+import { agentFrom, consoleLogger, createHeypi, slack, sqliteStore, workspace } from "@hunvreus/heypi";
 
 loadEnv("examples/slack-devops/.env");
 loadEnv(".env");
@@ -23,17 +22,6 @@ function list(name: string): string[] {
 		.map((value) => value.trim())
 		.filter(Boolean);
 }
-
-const pageService = tool<{ service: string; reason: string }>({
-	name: "page_service",
-	description: "Record a demo service page request. Requires approval.",
-	parameters: Type.Object({
-		service: Type.String(),
-		reason: Type.String(),
-	}),
-	confirm: (input) => ({ reason: `Page ${input.service}` }),
-	execute: async ({ service, reason }) => `page recorded: service=${service} reason=${reason}`,
-});
 
 const app = createHeypi({
 	store: sqliteStore({ path: resolve("./examples/slack-devops/heypi.db") }),
@@ -70,7 +58,7 @@ const app = createHeypi({
 		// 	streaming: true,
 		// }),
 	],
-	agent: agentFrom("./examples/slack-devops/agent", { model: "openai/gpt-5-mini", tools: [pageService] }),
+	agent: agentFrom("./examples/slack-devops/agent", { model: "openai/gpt-5-mini" }),
 	approval: {
 		approvers: list("HEYPI_APPROVERS"),
 		expiresInMs: 10 * 60 * 1000,

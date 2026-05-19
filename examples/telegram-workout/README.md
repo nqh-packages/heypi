@@ -19,6 +19,11 @@ Required env vars:
 ```bash
 TELEGRAM_BOT_TOKEN=...
 OPENAI_API_KEY=...
+```
+
+Optional env vars:
+
+```bash
 HEYPI_TELEGRAM_CHATS=
 HEYPI_TELEGRAM_USERS=
 ```
@@ -30,8 +35,8 @@ This example enables `streaming: true`, so Telegram replies are posted as draft 
 Check setup and discover a target chat:
 
 ```bash
-pnpm exec heypi telegram check --env examples/telegram-workout/.env
-pnpm exec heypi telegram observe --env examples/telegram-workout/.env
+pnpm heypi telegram check --env examples/telegram-workout/.env
+pnpm heypi telegram observe --env examples/telegram-workout/.env
 ```
 
 Try:

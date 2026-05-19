@@ -25,7 +25,7 @@ createHeypi(config)
   scheduler.start()
 ```
 
-The current production runtime target is a hosted Node process. Slack HTTP mode uses Bolt's Node HTTP receiver, Slack Socket Mode uses a websocket connection, and Telegram uses long polling. Cloudflare Workers and other Fetch API runtimes are not supported yet.
+The current production runtime target is a hosted Node process. Slack HTTP mode uses Bolt's Node HTTP receiver, Slack Socket Mode uses a websocket connection, Telegram uses long polling, and Discord uses the gateway. Cloudflare Workers and other Fetch API runtimes are not supported yet.
 
 ## Main Boundaries
 
@@ -107,10 +107,11 @@ Pi tool call
 `src/runtime/` owns command and file access. Runtime selection is static per app:
 
 - `just-bash`: default production runtime
+- `docker-bash`: bash in Docker with the workspace mounted at `/workspace`
 - `guarded-bash`: host bash plus regex guardrails
 - `host-bash`: host bash, unsafe/dev/admin mode
 
-File tools run under the configured workspace root and enforce size and traversal limits. Regex command policy is a guardrail, not isolation. Use `just-bash` for team-facing agents.
+File tools run under the configured workspace root and enforce size, lexical traversal, and symlink escape limits. Regex command policy is a guardrail, not isolation. Use `just-bash` or `docker-bash` for team-facing agents.
 
 ### Store
 
@@ -148,7 +149,7 @@ Scheduled turns reuse the same handler path as inbound messages with `scheduled:
 ## Request Flow
 
 ```text
-Slack / Telegram event
+Slack / Telegram / Discord event
   -> adapter allowlist + trigger check
   -> handler(Inbound)
   -> thread + message + turn persistence
@@ -171,6 +172,7 @@ heypi's safety comes from layered runtime and governance boundaries:
 - confirmed custom tools can require human approval
 - file tools are scoped to the runtime workspace and size-limited
 - `just-bash` is the safe default runtime
+- `docker-bash` provides a stronger OS boundary for bash when Docker is available
 
 The model does not claim that regex policies or host bash are isolation. `guarded-bash` and `host-bash` execute on the host and should be treated as unsafe/dev/admin modes.
 
@@ -182,6 +184,8 @@ Supported today:
 - Slack Socket Mode
 - Slack HTTP mode through Bolt's Node receiver
 - Telegram long polling
+- Discord gateway
+- Webhook HTTP mode through Node's HTTP server
 - local SQLite store
 
 Not supported today:

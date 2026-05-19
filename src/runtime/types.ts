@@ -1,4 +1,4 @@
-export type RuntimeName = "just-bash" | "guarded-bash" | "host-bash";
+export type RuntimeName = "just-bash" | "docker-bash" | "guarded-bash" | "host-bash";
 
 export type Capabilities = {
 	bash?: boolean;

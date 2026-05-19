@@ -27,16 +27,27 @@ heypi telegram check [--env .env]
 heypi telegram observe [--env .env] [--timeout 60]
 ```
 
+Discord:
+
+```bash
+heypi discord check [--env .env]
+heypi discord observe [--env .env] [--timeout 60]
+heypi discord channels [--env .env]
+heypi discord invite --client-id <application-id>
+heypi discord env
+```
+
 Jobs:
 
 ```bash
 heypi jobs list --db heypi.db [--json]
+heypi jobs show <id> --db heypi.db [--json]
 heypi jobs run <id> --db heypi.db
 heypi jobs pause <id> --db heypi.db
 heypi jobs resume <id> --db heypi.db
 ```
 
-`jobs run` marks the job due now. A running heypi app executes it on its next scheduler tick because execution needs the app's agent, adapters, runtime, and tools.
+Job commands are scheduler admin commands. `jobs run` marks the job due now. A running heypi app executes it on its next scheduler tick because execution needs the app's agent, adapters, runtime, and tools.
 
 ## Install
 

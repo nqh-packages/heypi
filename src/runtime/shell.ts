@@ -12,13 +12,21 @@ export async function executeBash(
 	command: string,
 	options: { cwd: string; timeoutMs: number; env: NodeJS.ProcessEnv; signal?: AbortSignal },
 ): Promise<BashResult> {
+	return await executeProcess("bash", ["-lc", command], options);
+}
+
+export async function executeProcess(
+	command: string,
+	args: string[],
+	options: { cwd: string; timeoutMs: number; env: NodeJS.ProcessEnv; signal?: AbortSignal },
+): Promise<BashResult> {
 	const start = Date.now();
 	return await new Promise((resolve) => {
 		if (options.signal?.aborted) {
 			resolve({ code: 130, out: "", err: "Command cancelled", ms: Date.now() - start });
 			return;
 		}
-		const proc = spawn("bash", ["-lc", command], {
+		const proc = spawn(command, args, {
 			cwd: options.cwd,
 			env: options.env,
 			stdio: ["ignore", "pipe", "pipe"],
@@ -52,6 +60,9 @@ export async function executeBash(
 		});
 		proc.stderr.on("data", (buf: Buffer) => {
 			err += buf.toString("utf8");
+		});
+		proc.on("error", (error) => {
+			finish({ code: 127, out: clip(out), err: clip(`${err}${error.message}`), ms: Date.now() - start });
 		});
 		proc.on("close", (code) => {
 			finish({ code: code ?? 1, out: clip(out), err: clip(err), ms: Date.now() - start });

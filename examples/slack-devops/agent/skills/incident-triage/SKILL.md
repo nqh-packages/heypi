@@ -1,11 +1,11 @@
 ---
 name: incident-triage
-description: Triage production incidents by gathering symptoms, checking runbooks, running safe diagnostics, and proposing a minimal remediation plan with approvals for risky commands.
+description: Triage Atlas API production incidents by checking bundled runbooks, resolving known servers, running safe diagnostics, and proposing a minimal remediation plan.
 ---
 
 # Incident Triage
 
-Use this skill when the user reports an outage, degraded service, elevated errors, or unknown production behavior.
+Use this skill when the user reports an Atlas API outage, degraded service, elevated errors, deployment issue, host issue, or unknown production behavior.
 
 ## Objectives
 
@@ -22,11 +22,12 @@ Use this skill when the user reports an outage, degraded service, elevated error
 - If unknown, state assumptions explicitly.
 
 2. Load relevant runbook context
-- Use `runbook_search` with concrete keywords (`service`, `error`, `timeout`, `deployment`, etc.).
+- Use `runbook_search` with concrete keywords (`api`, `gateway`, `worker`, `postgres`, `redis`, `error`, `timeout`, `deployment`, etc.).
 - Prefer runbook procedures over ad-hoc steps.
+- Use only the services and servers listed in the bundled runbooks.
 
 3. Execute safe diagnostics first
-- Use `bash` for read-only checks (`ls`, `cat`, `grep`, `ps`, `df`, `free`, `curl -I`, logs).
+- Use `bash` for read-only checks against the configured workspace (`ls`, `cat`, `grep`, `find`, log inspection).
 - Keep commands scoped and auditable.
 
 4. Propose minimal remediation
@@ -39,6 +40,7 @@ Use this skill when the user reports an outage, degraded service, elevated error
 ## Guardrails
 
 - Do not execute destructive commands unless explicitly required and approved.
+- Do not modify the agent's own files, prompts, runbooks, package files, or source code.
 - Keep command blast radius as small as possible.
 - Prefer deterministic, reversible changes.
 - Keep output concise and operational.

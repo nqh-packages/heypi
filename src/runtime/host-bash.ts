@@ -1,11 +1,11 @@
 import { mkdirSync } from "node:fs";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import type { RuntimeLimits } from "../config.js";
 import { assertNotAborted, assertSize, runtimeLimits } from "./limits.js";
 import { match } from "./match.js";
-import { hostPath } from "./path.js";
+import { hostMkdir, hostRealPath, hostWritePath, realInside } from "./path.js";
 import { executeBash } from "./shell.js";
 import type { GrepHit, LsEntry, Runtime } from "./types.js";
 
@@ -40,7 +40,7 @@ export function hostBash(input: {
 		},
 		read: async ({ path, offset, limit, signal }) => {
 			assertNotAborted(signal);
-			const file = hostPath(root, path);
+			const file = await hostRealPath(root, path);
 			const info = await stat(file);
 			assertSize(info.size, limits.maxFileBytes, path);
 			const text = await readFile(file, "utf8");
@@ -51,13 +51,13 @@ export function hostBash(input: {
 		},
 		write: async ({ path, content }) => {
 			assertSize(Buffer.byteLength(content), limits.maxFileBytes, path);
-			const file = hostPath(root, path);
-			await mkdir(dirname(file), { recursive: true });
+			await hostMkdir(root, dirname(path));
+			const file = await hostWritePath(root, path);
 			await writeFile(file, content, "utf8");
 			return { path, bytes: Buffer.byteLength(content) };
 		},
 		edit: async ({ path, oldText, newText, replaceAll }) => {
-			const file = hostPath(root, path);
+			const file = await hostRealPath(root, path);
 			const info = await stat(file);
 			assertSize(info.size, limits.maxFileBytes, path);
 			const text = await readFile(file, "utf8");
@@ -72,7 +72,7 @@ export function hostBash(input: {
 		grep: async ({ query, path = ".", maxResults = 100, signal }) => {
 			const hits: GrepHit[] = [];
 			let scanned = 0;
-			for (const file of await files(root, hostPath(root, path), limits.maxEntries, signal)) {
+			for (const file of await files(root, await hostRealPath(root, path), limits.maxEntries, signal)) {
 				assertNotAborted(signal);
 				const info = await stat(file).catch(() => undefined);
 				if (!info) continue;
@@ -91,7 +91,12 @@ export function hostBash(input: {
 		},
 		find: async ({ pattern, path = ".", maxResults = 1000, signal }) => {
 			const out: string[] = [];
-			for (const file of await paths(root, hostPath(root, path), Math.min(maxResults, limits.maxEntries), signal)) {
+			for (const file of await paths(
+				root,
+				await hostRealPath(root, path),
+				Math.min(maxResults, limits.maxEntries),
+				signal,
+			)) {
 				assertNotAborted(signal);
 				const rel = relative(root, file);
 				if (!match(rel, pattern)) continue;
@@ -102,12 +107,12 @@ export function hostBash(input: {
 		},
 		ls: async ({ path = ".", signal }) => {
 			assertNotAborted(signal);
-			const base = hostPath(root, path);
+			const base = await hostRealPath(root, path);
 			const entries: LsEntry[] = [];
 			for (const name of await readdir(base)) {
 				assertNotAborted(signal);
 				if (entries.length >= limits.maxEntries) break;
-				const full = join(base, name);
+				const full = await realInside(root, join(base, name), name);
 				const info = await stat(full);
 				entries.push({
 					name,
@@ -129,7 +134,8 @@ async function paths(root: string, start: string, maxEntries: number, signal?: A
 	for (const name of await readdir(start)) {
 		assertNotAborted(signal);
 		if (out.length >= maxEntries) break;
-		out.push(...(await paths(root, join(start, name), maxEntries - out.length, signal)));
+		const child = await realInside(root, join(start, name), name);
+		out.push(...(await paths(root, child, maxEntries - out.length, signal)));
 	}
 	return out.filter((path) => path !== root);
 }

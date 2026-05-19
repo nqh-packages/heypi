@@ -1,7 +1,7 @@
 import { type AllMiddlewareArgs, App, type types } from "@slack/bolt";
 import { message as errorMessage, type Logger, userError } from "../core/log.js";
 import { chunkText } from "../render/chunk.js";
-import type { Attachment, AttachmentStore, ResolvedAttachment } from "./attachments.js";
+import { type Attachment, type AttachmentStore, type ResolvedAttachment, responseBytes } from "./attachments.js";
 import { type DeliveryConfig, DeliveryQueue } from "./delivery.js";
 import type { Adapter, AdapterStart, AdapterTarget, Handler, Outbound } from "./handler.js";
 import { DraftReplyStream, type ReplyStreamOption } from "./reply-stream.js";
@@ -762,9 +762,10 @@ async function slackAttachments(input: {
 			continue;
 		}
 		try {
+			assertSlackFileUrl(url);
 			const response = await fetch(url, { headers: { Authorization: `Bearer ${input.token}` } });
 			if (!response.ok) throw new Error(`Slack file download failed: ${response.status}`);
-			const data = new Uint8Array(await response.arrayBuffer());
+			const data = await responseBytes(response, input.store.maxBytes);
 			attachments.push(
 				await input.store.save({
 					provider: "slack",
@@ -786,6 +787,16 @@ async function slackAttachments(input: {
 		}
 	}
 	return attachments.length ? attachments : undefined;
+}
+
+function assertSlackFileUrl(input: string): void {
+	const url = new URL(input);
+	if (url.protocol !== "https:") throw new Error(`Slack file URL must use https: ${url.protocol}`);
+	if (!slackFileHost(url.hostname)) throw new Error(`Slack file URL host is not allowed: ${url.hostname}`);
+}
+
+function slackFileHost(host: string): boolean {
+	return host === "slack.com" || host.endsWith(".slack.com") || host.endsWith(".slack-edge.com");
 }
 
 async function handleAction(input: {

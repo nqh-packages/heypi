@@ -1,3 +1,4 @@
+import { redact } from "./log.js";
 import type { Reply } from "./types.js";
 
 export function helpReply(): Reply {
@@ -30,7 +31,7 @@ export function renderThreadStatus(input: {
 		lines.push(`lock=${input.lock.owner} expires_in_ms=${Math.max(0, input.lock.expiresAt - Date.now())}`);
 	if (input.approvals.length) {
 		lines.push("pending approvals:");
-		for (const row of input.approvals) lines.push(`- ${row.id} call=${row.callId} cmd=${row.command}`);
+		for (const row of input.approvals) lines.push(`- ${row.id} call=${row.callId} cmd=${redact(row.command)}`);
 	}
 	if (input.calls.length) {
 		lines.push("calls:");
@@ -58,6 +59,7 @@ export function renderCall(input: {
 	approvers?: string[];
 }): Reply {
 	if (input.state === "pending_approval") {
+		const command = input.command ? redact(input.command) : undefined;
 		return {
 			text: [
 				`call=${input.callId}`,
@@ -65,8 +67,8 @@ export function renderCall(input: {
 				`approval=${input.approvalId ?? "n/a"}`,
 				`reason=${input.reason ?? "policy"}`,
 				input.approvers?.length ? `approvers=${input.approvers.join(",")}` : undefined,
-				input.command ? "cmd:" : undefined,
-				input.command,
+				command ? "cmd:" : undefined,
+				command,
 			]
 				.filter((line): line is string => typeof line === "string")
 				.join("\n"),
@@ -74,7 +76,7 @@ export function renderCall(input: {
 				? {
 						id: input.approvalId,
 						callId: input.callId,
-						command: input.command ?? "",
+						command: command ?? "",
 						runtime: input.runtime ?? "",
 						reason: input.reason ?? "policy",
 						allowed: input.approvers ?? [],

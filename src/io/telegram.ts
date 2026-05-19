@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { message as errorMessage, type Logger, userError } from "../core/log.js";
 import { chunkText } from "../render/chunk.js";
-import type { Attachment, AttachmentStore, ResolvedAttachment } from "./attachments.js";
+import { type Attachment, type AttachmentStore, type ResolvedAttachment, responseBytes } from "./attachments.js";
 import { type DeliveryConfig, DeliveryQueue } from "./delivery.js";
 import type { Adapter, AdapterStart, AdapterTarget, Handler, Outbound } from "./handler.js";
 import { DraftReplyStream, type ReplyStreamOption } from "./reply-stream.js";
@@ -15,7 +15,7 @@ const TELEGRAM_CALLBACK_LIMIT = 200;
 
 export type TelegramConfig = {
 	token: string;
-	apiUrl?: string;
+	apiUrl?: { override: string };
 	pollTimeoutSeconds?: number;
 	allow?: TelegramAllow;
 	trigger?: TelegramTrigger;
@@ -52,6 +52,7 @@ export function telegram(input: TelegramConfig): Adapter {
 			delivery = new DeliveryQueue(input.delivery, start.logger);
 			stopped = false;
 			start.logger.info("adapter.start", { adapter: "telegram" });
+			if (input.apiUrl) start.logger.warn("telegram.api_url_override", { adapter: "telegram" });
 			loop = poll({ client, start, config: input, delivery, stopped: () => stopped });
 		},
 		async stop(): Promise<void> {
@@ -671,7 +672,7 @@ async function telegramAttachments(input: {
 		}
 		try {
 			const found = await input.client.getFile({ file_id: file.id });
-			const data = await input.client.downloadFile(found.file_path);
+			const data = await input.client.downloadFile(found.file_path, input.store.maxBytes);
 			out.push(
 				await input.store.save({
 					provider: "telegram",
@@ -820,9 +821,9 @@ class TelegramClient {
 
 	constructor(
 		private readonly token: string,
-		apiUrl = "https://api.telegram.org",
+		apiUrl?: TelegramConfig["apiUrl"],
 	) {
-		this.base = `${apiUrl.replace(/\/+$/, "")}/bot${token}`;
+		this.base = `${telegramApiUrl(apiUrl).replace(/\/+$/, "")}/bot${token}`;
 	}
 
 	async getUpdates(input: { offset: number; timeout: number }): Promise<TelegramUpdate[]> {
@@ -857,11 +858,11 @@ class TelegramClient {
 		return out.result;
 	}
 
-	async downloadFile(path: string): Promise<Uint8Array> {
+	async downloadFile(path: string, maxBytes?: number): Promise<Uint8Array> {
 		const url = `${this.baseFile}/${path}`;
 		const response = await fetch(url);
 		if (!response.ok) throw new Error(`Telegram file download failed: ${response.status}`);
-		return new Uint8Array(await response.arrayBuffer());
+		return await responseBytes(response, maxBytes);
 	}
 
 	async sendDocument(input: {
@@ -900,6 +901,12 @@ class TelegramClient {
 		const parsed = (await response.json()) as TelegramResponse<unknown>;
 		if (!response.ok || !parsed.ok) throw telegramError(parsed, response.status);
 	}
+}
+
+function telegramApiUrl(input?: TelegramConfig["apiUrl"]): string {
+	if (input === undefined) return "https://api.telegram.org";
+	if (typeof input === "object" && typeof input.override === "string") return input.override;
+	throw new Error("Telegram apiUrl override must be explicit: { override: url }");
 }
 
 function telegramError(input: TelegramResponse<unknown>, status: number): Error {

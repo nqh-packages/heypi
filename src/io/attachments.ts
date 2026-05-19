@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { stat, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import type { AttachmentConfig } from "../config.js";
 import type { ReplyAttachment } from "../core/types.js";
-import { hostPath, virtualPath } from "../runtime/path.js";
+import { hostMkdir, hostRealPath, hostWritePath, virtualPath } from "../runtime/path.js";
 import type { Runtime } from "../runtime/types.js";
 
 export type Attachment = {
@@ -53,8 +53,8 @@ export function runtimeAttachments(runtime: Runtime, config: AttachmentConfig = 
 			const provider = safeSegment(input.provider);
 			const id = safeSegment(input.id ?? randomUUID());
 			const relative = join("incoming", provider, message, `${id}-${name}`);
-			const full = hostPath(runtime.root, relative);
-			await mkdir(hostPath(runtime.root, join("incoming", provider, message)), { recursive: true });
+			await hostMkdir(runtime.root, join("incoming", provider, message));
+			const full = await hostWritePath(runtime.root, relative);
 			await writeFile(full, input.data);
 			return compact({
 				name,
@@ -67,7 +67,7 @@ export function runtimeAttachments(runtime: Runtime, config: AttachmentConfig = 
 			});
 		},
 		async resolve(input): Promise<ResolvedAttachment> {
-			const full = hostPath(runtime.root, input.path);
+			const full = await hostRealPath(runtime.root, input.path);
 			const info = await stat(full);
 			if (!info.isFile()) throw new Error(`attachment is not a file: ${input.path}`);
 			return compactResolved({
@@ -78,6 +78,40 @@ export function runtimeAttachments(runtime: Runtime, config: AttachmentConfig = 
 			});
 		},
 	};
+}
+
+export async function responseBytes(response: Response, maxBytes?: number): Promise<Uint8Array> {
+	const length = response.headers.get("content-length");
+	if (maxBytes !== undefined && length && Number(length) > maxBytes) {
+		throw new Error(`attachment exceeds limit: ${length} > ${maxBytes}`);
+	}
+	if (!response.body) {
+		const data = new Uint8Array(await response.arrayBuffer());
+		if (maxBytes !== undefined && data.byteLength > maxBytes) {
+			throw new Error(`attachment exceeds limit: ${data.byteLength} > ${maxBytes}`);
+		}
+		return data;
+	}
+	const reader = response.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		total += value.byteLength;
+		if (maxBytes !== undefined && total > maxBytes) {
+			await reader.cancel();
+			throw new Error(`attachment exceeds limit: ${total} > ${maxBytes}`);
+		}
+		chunks.push(value);
+	}
+	const out = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		out.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return out;
 }
 
 export function attachmentPrompt(text: string, attachments?: Attachment[]): string {

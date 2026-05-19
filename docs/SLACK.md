@@ -26,7 +26,7 @@ reactions:write
 Install the app to the workspace and copy the bot token:
 
 ```bash
-SLACK_BOT_TOKEN=xoxb-...
+SLACK_BOT_TOKEN=<slack-bot-token>
 ```
 
 ## Signing Secret
@@ -46,7 +46,7 @@ SLACK_SIGNING_SECRET=...
 3. Set:
 
 ```bash
-SLACK_APP_TOKEN=xapp-...
+SLACK_APP_TOKEN=<slack-app-token>
 ```
 
 Use:

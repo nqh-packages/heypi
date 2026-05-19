@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { attachmentPrompt, runtimeAttachments } from "../src/io/attachments.js";
+import { attachmentPrompt, responseBytes, runtimeAttachments } from "../src/io/attachments.js";
 import type { Runtime } from "../src/runtime/types.js";
 
 test("attachmentPrompt appends stable paths and metadata", () => {
@@ -55,11 +55,27 @@ test("runtimeAttachments resolves outbound files under runtime root", async () =
 
 	const file = await store.resolve({ path: "report.txt", name: "../final report.txt", mimeType: "text/plain" });
 
-	assert.equal(file.path, join(root, "report.txt"));
+	assert.equal(file.path, await realpath(join(root, "report.txt")));
 	assert.equal(file.name, "final_report.txt");
 	assert.equal(file.mimeType, "text/plain");
 	assert.equal(file.size, 5);
 	await assert.rejects(() => store.resolve({ path: "../outside.txt" }), /escapes runtime root/);
+});
+
+test("runtimeAttachments rejects symlink escapes", async () => {
+	const root = await mkdtemp(join(tmpdir(), "heypi-outbound-link-"));
+	const outside = await mkdtemp(join(tmpdir(), "heypi-outside-"));
+	await writeFile(join(outside, "secret.txt"), "secret");
+	await symlink(join(outside, "secret.txt"), join(root, "link.txt"));
+	const store = runtimeAttachments(runtime(root, "host-bash"));
+
+	await assert.rejects(() => store.resolve({ path: "link.txt" }), /escapes runtime root/);
+});
+
+test("responseBytes stops reading above the byte limit", async () => {
+	const response = new Response("hello");
+
+	await assert.rejects(() => responseBytes(response, 4), /exceeds limit/);
 });
 
 function runtime(root: string, name: Runtime["name"]): Runtime {

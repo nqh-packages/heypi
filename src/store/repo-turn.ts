@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import type { TurnState } from "../core/types.js";
 import { turn } from "../db/schema.js";
 import type { Db } from "./db.js";
@@ -53,6 +53,15 @@ export class TurnRepo {
 			.where(eq(turn.threadId, threadId))
 			.orderBy(desc(turn.updatedAt))
 			.limit(Math.min(Math.max(input.limit ?? 5, 1), 25));
+	}
+
+	async getByTrace(threadId: string, trace: string): Promise<TurnRow | undefined> {
+		const rows = await this.db
+			.select()
+			.from(turn)
+			.where(and(eq(turn.threadId, threadId), eq(turn.trace, trace)))
+			.limit(1);
+		return rows[0];
 	}
 
 	private async get(id: string): Promise<TurnRow | undefined> {

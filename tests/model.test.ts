@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CallRunner } from "../src/core/calls.js";
-import { createHandler } from "../src/io/handler.js";
+import { createHandler, createStatus } from "../src/io/handler.js";
 import type { ReplyStream } from "../src/io/reply-stream.js";
 import type { AgentReq } from "../src/runtime/agent.js";
 import { streamTextDelta } from "../src/runtime/pi-agent.js";
@@ -14,6 +14,10 @@ import { sqliteStore } from "../src/store/sqlite.js";
 async function tempDb(): Promise<{ path: string; cleanup: () => Promise<void> }> {
 	const dir = await mkdtemp(join(tmpdir(), "heypi-model-"));
 	return { path: join(dir, "store.db"), cleanup: () => rm(dir, { recursive: true, force: true }) };
+}
+
+function secret(value: string): string {
+	return `sk-${value}`;
 }
 
 test("handler passes per-turn model override to agent", async () => {
@@ -56,6 +60,46 @@ test("handler passes per-turn model override to agent", async () => {
 	}
 });
 
+test("handler scopes agent requests by provider team and channel", async () => {
+	const db = await tempDb();
+	try {
+		const store = sqliteStore({ path: db.path });
+		await store.setup();
+		let request: AgentReq | undefined;
+		const handler = createHandler({
+			agentId: "a",
+			store,
+			callRunner: new CallRunner(store.calls, store.approvals, new Queue({}), {
+				name: "host-bash",
+				root: ".",
+				capabilities: {},
+			}),
+			agent: {
+				ask: async (req) => {
+					request = req;
+					return { text: "ok" };
+				},
+				continue: async () => ({ text: "ok" }),
+			},
+		});
+
+		await handler({
+			trace: "trace-scoped",
+			provider: "slack",
+			team: "T1",
+			eventId: "event-scoped",
+			channel: "C1",
+			actor: "U1",
+			thread: "C1:1",
+			text: "hello",
+		});
+
+		assert.equal(request?.channel, "slack:T1:C1");
+	} finally {
+		await db.cleanup();
+	}
+});
+
 test("handler redacts secrets before returning adapter output", async () => {
 	const db = await tempDb();
 	try {
@@ -70,7 +114,7 @@ test("handler redacts secrets before returning adapter output", async () => {
 				capabilities: {},
 			}),
 			agent: {
-				ask: async () => ({ text: "token sk-testsecret" }),
+				ask: async () => ({ text: `token ${secret("testsecret")}` }),
 				continue: async () => ({ text: "ok" }),
 			},
 		});
@@ -86,6 +130,248 @@ test("handler redacts secrets before returning adapter output", async () => {
 		});
 
 		assert.equal(out?.text, "token sk-<redacted>");
+	} finally {
+		await db.cleanup();
+	}
+});
+
+test("handler scopes approvals by provider team and channel", async () => {
+	const db = await tempDb();
+	try {
+		const store = sqliteStore({ path: db.path });
+		await store.setup();
+		const handler = createHandler({
+			agentId: "a",
+			store,
+			callRunner: new CallRunner(
+				store.calls,
+				store.approvals,
+				new Queue({ maxConcurrent: 1, maxPerChat: 1 }),
+				{
+					name: "just-bash",
+					root: ".",
+					capabilities: { bash: true },
+					bash: async () => ({ code: 0, out: "ok", err: "", ms: 1 }),
+				},
+				{ approvers: ["U_ALLOWED"] },
+				undefined,
+				store.transaction,
+			),
+			agent: {
+				ask: async () => ({ text: "ok" }),
+				continue: async () => ({ text: "ok" }),
+			},
+		});
+
+		const requested = await handler({
+			trace: "trace-approval",
+			provider: "slack",
+			team: "T1",
+			eventId: "event-approval",
+			channel: "C1",
+			actor: "U_REQUESTER",
+			thread: "C1:1",
+			text: "bash curl https://example.com",
+		});
+		const approvalId = requested?.approval?.id;
+		assert.ok(approvalId);
+		assert.equal((await store.approvals.get(approvalId))?.channel, "slack:T1:C1");
+
+		const wrongTeam = await handler({
+			trace: "trace-approval-wrong-team",
+			provider: "slack",
+			team: "T2",
+			eventId: "event-approval-wrong-team",
+			channel: "C1",
+			actor: "U_ALLOWED",
+			thread: "C1:1",
+			text: `approve ${approvalId}`,
+		});
+		assert.equal(wrongTeam?.private, true);
+		assert.match(wrongTeam?.text ?? "", /not found/);
+
+		const approved = await handler({
+			trace: "trace-approval-right-team",
+			provider: "slack",
+			team: "T1",
+			eventId: "event-approval-right-team",
+			channel: "C1",
+			actor: "U_ALLOWED",
+			thread: "C1:1",
+			text: `approve ${approvalId}`,
+		});
+		assert.match(approved?.text ?? "", /state=done/);
+	} finally {
+		await db.cleanup();
+	}
+});
+
+test("status only reports pending approvals for the requested run", async () => {
+	const db = await tempDb();
+	try {
+		const store = sqliteStore({ path: db.path });
+		await store.setup();
+		const thread = await store.threads.getOrCreate({
+			agent: "a",
+			provider: "webhook",
+			channel: "whch_test",
+			actor: "user",
+			key: "whth_test",
+		});
+		const firstMessage = await store.messages.create({
+			threadId: thread.id,
+			provider: "webhook",
+			role: "user",
+			actor: "user",
+			text: "needs approval",
+		});
+		const firstTurn = await store.turns.create({
+			threadId: thread.id,
+			inputMessageId: firstMessage.id,
+			agent: "a",
+			provider: "webhook",
+			channel: "whch_test",
+			actor: "user",
+			trace: "run-with-approval",
+		});
+		const command = `curl -H 'Authorization: Bearer ${secret("secret")}' https://example.com`;
+		const call = await store.calls.create({
+			turnId: firstTurn.id,
+			threadId: thread.id,
+			messageId: firstMessage.id,
+			channel: "webhook::whch_test",
+			actor: "user",
+			tool: "bash",
+			command,
+			runtime: "just-bash",
+			state: "pending_approval",
+		});
+		const approval = await store.approvals.create({
+			callId: call.id,
+			channel: "webhook::whch_test",
+			threadId: thread.id,
+			turnId: firstTurn.id,
+			requestedBy: "user",
+			command,
+			runtime: "just-bash",
+			reason: "test",
+		});
+
+		const secondMessage = await store.messages.create({
+			threadId: thread.id,
+			provider: "webhook",
+			role: "user",
+			actor: "user",
+			text: "normal run",
+		});
+		const secondTurn = await store.turns.create({
+			threadId: thread.id,
+			inputMessageId: secondMessage.id,
+			agent: "a",
+			provider: "webhook",
+			channel: "whch_test",
+			actor: "user",
+			trace: "run-done",
+		});
+		const result = await store.messages.create({
+			threadId: thread.id,
+			provider: "webhook",
+			role: "assistant",
+			actor: "heypi",
+			text: `done ${secret("secret")}`,
+		});
+		await store.turns.finish(secondTurn.id, { state: "done", resultMessageId: result.id });
+
+		const status = createStatus({ agentId: "a", store });
+		const done = await status({ provider: "webhook", threadId: "whth_test", runId: "run-done" });
+		const pending = await status({ provider: "webhook", threadId: "whth_test", runId: "run-with-approval" });
+
+		assert.equal(done?.status, "done");
+		assert.equal(done?.approval, undefined);
+		assert.equal(done?.text, "done sk-<redacted>");
+		assert.equal(pending?.status, "pending_approval");
+		assert.equal(pending?.approval?.id, approval.id);
+		assert.equal(pending?.approval?.command, "curl -H 'Authorization: Bearer sk-<redacted>' https://example.com");
+	} finally {
+		await db.cleanup();
+	}
+});
+
+test("status resolves team-scoped threads with the same key", async () => {
+	const db = await tempDb();
+	try {
+		const store = sqliteStore({ path: db.path });
+		await store.setup();
+		const first = await store.threads.getOrCreate({
+			agent: "a",
+			provider: "slack",
+			team: "T1",
+			channel: "C1",
+			actor: "U1",
+			key: "C1:1",
+		});
+		const second = await store.threads.getOrCreate({
+			agent: "a",
+			provider: "slack",
+			team: "T2",
+			channel: "C1",
+			actor: "U1",
+			key: "C1:1",
+		});
+		const firstMessage = await store.messages.create({
+			threadId: first.id,
+			provider: "slack",
+			role: "user",
+			actor: "U1",
+			text: "first",
+		});
+		const secondMessage = await store.messages.create({
+			threadId: second.id,
+			provider: "slack",
+			role: "user",
+			actor: "U1",
+			text: "second",
+		});
+		const firstTurn = await store.turns.create({
+			threadId: first.id,
+			inputMessageId: firstMessage.id,
+			agent: "a",
+			provider: "slack",
+			channel: "C1",
+			actor: "U1",
+			trace: "run",
+		});
+		const secondTurn = await store.turns.create({
+			threadId: second.id,
+			inputMessageId: secondMessage.id,
+			agent: "a",
+			provider: "slack",
+			channel: "C1",
+			actor: "U1",
+			trace: "run",
+		});
+		const firstResult = await store.messages.create({
+			threadId: first.id,
+			provider: "slack",
+			role: "assistant",
+			actor: "heypi",
+			text: "team one",
+		});
+		const secondResult = await store.messages.create({
+			threadId: second.id,
+			provider: "slack",
+			role: "assistant",
+			actor: "heypi",
+			text: "team two",
+		});
+		await store.turns.finish(firstTurn.id, { state: "done", resultMessageId: firstResult.id });
+		await store.turns.finish(secondTurn.id, { state: "done", resultMessageId: secondResult.id });
+
+		const status = createStatus({ agentId: "a", store });
+
+		assert.equal((await status({ provider: "slack", team: "T1", threadId: "C1:1", runId: "run" }))?.text, "team one");
+		assert.equal((await status({ provider: "slack", team: "T2", threadId: "C1:1", runId: "run" }))?.text, "team two");
+		assert.equal(await status({ provider: "slack", threadId: "C1:1", runId: "run" }), undefined);
 	} finally {
 		await db.cleanup();
 	}
@@ -117,7 +403,7 @@ test("handler keeps streamed output redacted", async () => {
 			agent: {
 				ask: async (req) => {
 					await req.stream?.update("token sk-<redacted>");
-					return { text: "token sk-testsecret" };
+					return { text: `token ${secret("testsecret")}` };
 				},
 				continue: async () => ({ text: "ok" }),
 			},
@@ -158,14 +444,14 @@ test("PiAgent stream delta helper redacts before updating streams", async () => 
 
 	const out = streamTextDelta({
 		current: "token ",
-		delta: "sk-secret",
+		delta: secret("secret"),
 		stream,
 		logger: { warn() {} },
 		context: {},
 	});
 
 	await updated;
-	assert.equal(out, "token sk-secret");
+	assert.equal(out, `token ${secret("secret")}`);
 	assert.deepEqual(updates, ["token sk-<redacted>"]);
 });
 

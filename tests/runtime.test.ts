@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -7,6 +7,7 @@ import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import type { Logger } from "../src/core/log.js";
 import type { Confirm } from "../src/core/types.js";
 import { hostBash } from "../src/runtime/host-bash.js";
+import { createRuntime, runtimeName } from "../src/runtime/index.js";
 import { justBash } from "../src/runtime/just-bash.js";
 import { tools } from "../src/runtime/tools.js";
 import type { Runtime } from "../src/runtime/types.js";
@@ -59,6 +60,26 @@ test("runtime file tools enforce size limits", async () => {
 	}
 });
 
+test("host-bash file tools reject symlink escapes", async () => {
+	const root = await temp();
+	const outside = await temp();
+	try {
+		await writeFile(join(outside, "secret.txt"), "secret", "utf8");
+		await symlink(join(outside, "secret.txt"), join(root, "link.txt"));
+		const runtime = hostBash({ root });
+
+		await assert.rejects(() => runtime.read!({ path: "link.txt" }), /escapes runtime root/);
+		await assert.rejects(
+			() => runtime.edit!({ path: "link.txt", oldText: "secret", newText: "x" }),
+			/escapes runtime root/,
+		);
+		await assert.rejects(() => runtime.write!({ path: "link.txt", content: "x" }), /escapes runtime root/);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+		await rm(outside, { recursive: true, force: true });
+	}
+});
+
 test("just-bash file tools enforce write and edit size limits", async () => {
 	const root = await temp();
 	try {
@@ -92,6 +113,26 @@ test("host-bash uses a minimal environment unless hostEnv is configured", async 
 	} finally {
 		if (previous === undefined) delete process.env.HEYPI_SECRET_TEST;
 		else process.env.HEYPI_SECRET_TEST = previous;
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("docker-bash runtime uses host file tools and docker bash capability", async () => {
+	const root = await temp();
+	try {
+		assert.equal(runtimeName("docker-bash"), "docker-bash");
+		const runtime = createRuntime({
+			name: "docker-bash",
+			root,
+			app: process.cwd(),
+			docker: { image: "ubuntu:24.04", network: "none", user: false },
+		});
+		assert.equal(runtime.name, "docker-bash");
+		assert.equal(runtime.capabilities.bash, true);
+		await runtime.write?.({ path: "a.txt", content: "hello" });
+		const read = await runtime.read?.({ path: "a.txt" });
+		assert.equal(read?.text, "hello");
+	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
 });
@@ -267,6 +308,10 @@ function fakeLogger(warnings: Record<string, unknown>[]): Logger {
 
 class FakeMessages implements Messages {
 	constructor(private readonly rows: HistoryMessage[]) {}
+
+	async get(): Promise<Message | undefined> {
+		throw new Error("not implemented");
+	}
 
 	async create(): Promise<Message> {
 		throw new Error("not implemented");
