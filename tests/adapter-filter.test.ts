@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { discordAllowed, discordTriggered } from "../src/io/discord.js";
 import { slack, slackAllowed, slackTriggered } from "../src/io/slack.js";
 import { telegramAllowed, telegramTriggered } from "../src/io/telegram.js";
 
@@ -44,6 +45,22 @@ test("Slack trigger defaults to mention for channels and message for DMs", () =>
 	assert.deepEqual(slackTriggered(undefined, { text: "hello <@UBOT>", isDm: false, botUserId: "UBOT" }), { ok: true });
 	assert.deepEqual(slackTriggered("message", { text: "hello", isDm: false, botUserId: "UBOT" }), { ok: true });
 	assert.deepEqual(slackTriggered(undefined, { text: "hello", isDm: true, botUserId: "UBOT" }), { ok: true });
+	assert.deepEqual(slackTriggered(undefined, { text: "follow up", isDm: false, botUserId: "UBOT", thread: true }), {
+		ok: true,
+	});
+	assert.deepEqual(
+		slackTriggered(undefined, {
+			text: "follow up",
+			isDm: false,
+			botUserId: "UBOT",
+			thread: true,
+			threadTrigger: "mention",
+		}),
+		{
+			ok: false,
+			reason: "mention_required",
+		},
+	);
 });
 
 test("Slack HTTP mode requires a signing secret at runtime", () => {
@@ -92,4 +109,73 @@ test("Telegram trigger defaults to mention for groups and message for DMs", () =
 	});
 	assert.deepEqual(telegramTriggered("message", { text: "hello", isDm: false, botUsername: "my_bot" }), { ok: true });
 	assert.deepEqual(telegramTriggered(undefined, { text: "hello", isDm: true, botUsername: "my_bot" }), { ok: true });
+	assert.deepEqual(
+		telegramTriggered(undefined, { text: "follow up", isDm: false, botUsername: "my_bot", thread: true }),
+		{
+			ok: true,
+		},
+	);
+	assert.deepEqual(
+		telegramTriggered(undefined, {
+			text: "follow up",
+			isDm: false,
+			botUsername: "my_bot",
+			thread: true,
+			threadTrigger: "mention",
+		}),
+		{
+			ok: false,
+			reason: "mention_required",
+		},
+	);
+});
+
+test("Discord allowlists default to accepting delivered messages", () => {
+	assert.deepEqual(discordAllowed(undefined, { guild: "G1", channel: "C1", user: "U1", isDm: false }), { ok: true });
+	assert.deepEqual(discordAllowed(undefined, { channel: "D1", user: "U1", isDm: true }), { ok: true });
+});
+
+test("Discord allowlists reject mismatched dimensions and disabled DMs", () => {
+	assert.deepEqual(discordAllowed({ guilds: ["G2"] }, { guild: "G1", channel: "C1", user: "U1", isDm: false }), {
+		ok: false,
+		reason: "guild not allowed",
+	});
+	assert.deepEqual(discordAllowed({ channels: ["C2"] }, { guild: "G1", channel: "C1", user: "U1", isDm: false }), {
+		ok: false,
+		reason: "channel not allowed",
+	});
+	assert.deepEqual(discordAllowed({ users: ["U2"] }, { guild: "G1", channel: "C1", user: "U1", isDm: false }), {
+		ok: false,
+		reason: "user not allowed",
+	});
+	assert.deepEqual(discordAllowed({ dms: false }, { channel: "D1", user: "U1", isDm: true }), {
+		ok: false,
+		reason: "dm disabled",
+	});
+});
+
+test("Discord trigger defaults to mention for channels and message for DMs", () => {
+	assert.deepEqual(discordTriggered(undefined, { text: "hello", isDm: false, mentioned: false }), {
+		ok: false,
+		reason: "mention required",
+	});
+	assert.deepEqual(discordTriggered(undefined, { text: "hello", isDm: false, mentioned: true }), { ok: true });
+	assert.deepEqual(discordTriggered("message", { text: "hello", isDm: false, mentioned: false }), { ok: true });
+	assert.deepEqual(discordTriggered(undefined, { text: "hello", isDm: true, mentioned: false }), { ok: true });
+	assert.deepEqual(discordTriggered(undefined, { text: "follow up", isDm: false, mentioned: false, thread: true }), {
+		ok: true,
+	});
+	assert.deepEqual(
+		discordTriggered(undefined, {
+			text: "follow up",
+			isDm: false,
+			mentioned: false,
+			thread: true,
+			threadTrigger: "mention",
+		}),
+		{
+			ok: false,
+			reason: "mention required",
+		},
+	);
 });

@@ -49,7 +49,7 @@ export class CallRunner {
 	}
 
 	async handle(
-		intent: Exclude<Intent, { kind: "ask" | "help" | "cancel" | "thread_status" }>,
+		intent: Exclude<Intent, { kind: "ask" | "help" | "cancel" | "approvals" | "thread_status" }>,
 		context: CallContext = {},
 		signal?: AbortSignal,
 	): Promise<Reply> {

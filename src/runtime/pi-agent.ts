@@ -11,6 +11,7 @@ import {
 import type { AgentConfig, AgentContextBlock, AgentContextInput } from "../config.js";
 import type { CallRunner } from "../core/calls.js";
 import { type Logger, logError, logger, redact, userError } from "../core/log.js";
+import type { ApprovalPrompt } from "../core/types.js";
 import type { ReplyStream } from "../io/reply-stream.js";
 import type { Messages, Sessions, StoredMessage } from "../store/types.js";
 import type { Agent, AgentReq, AgentRes } from "./agent.js";
@@ -175,6 +176,7 @@ export class PiAgent implements Agent {
 		}
 		const text = out.trim();
 		const silent = silentReply(text);
+		const approval = approvalFromMessages(messages);
 		log.debug("agent.end", {
 			agent: this.input.agent.id,
 			trace: req.trace,
@@ -185,7 +187,7 @@ export class PiAgent implements Agent {
 			actor: req.actor,
 			chars: text.length,
 		});
-		return { text: silent ? "" : text, silent, messages };
+		return { text: silent ? "" : text, silent, approval, messages };
 	}
 
 	private async create(
@@ -293,6 +295,40 @@ export function renderContextBlock(block: AgentContextBlock | undefined | null |
 	if (!text) return undefined;
 	const title = block.title?.trim();
 	return title ? `## ${title}\n\n${text}` : text;
+}
+
+export function approvalFromMessages(messages: StoredMessage[]): ApprovalPrompt | undefined {
+	for (const message of [...messages].reverse()) {
+		if (!("details" in message)) continue;
+		const approval = approvalFromDetails(message.details);
+		if (approval) return approval;
+	}
+	return undefined;
+}
+
+function approvalFromDetails(details: unknown): ApprovalPrompt | undefined {
+	if (!details || typeof details !== "object" || !("approval" in details)) return undefined;
+	const approval = (details as { approval?: unknown }).approval;
+	if (!approval || typeof approval !== "object") return undefined;
+	const input = approval as Record<string, unknown>;
+	if (
+		typeof input.id !== "string" ||
+		typeof input.callId !== "string" ||
+		typeof input.command !== "string" ||
+		typeof input.runtime !== "string" ||
+		typeof input.reason !== "string" ||
+		!Array.isArray(input.allowed)
+	) {
+		return undefined;
+	}
+	return {
+		id: input.id,
+		callId: input.callId,
+		command: input.command,
+		runtime: input.runtime,
+		reason: input.reason,
+		allowed: input.allowed.filter((item): item is string => typeof item === "string"),
+	};
 }
 
 function extensionToolNames(loader: ResourceLoader): string[] {

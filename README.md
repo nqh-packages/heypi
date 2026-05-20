@@ -137,6 +137,7 @@ const pageService = tool<{ service: string; reason: string }>({
 Text fallback for approvals works on every adapter:
 
 ```text
+approvals
 approve <approval-id>
 deny <approval-id>
 status
@@ -144,7 +145,7 @@ status <call-id>
 cancel <turn-id-or-trace>
 ```
 
-Slack, Telegram, and Discord also render provider-native buttons.
+Slack, Telegram, and Discord also render provider-native buttons. The `approvals` chat command lists pending approvals. If `approval.approvers` is configured, only those actors can use it; otherwise it lists pending approvals in the current thread only.
 
 See [`docs/EXTENDING.md`](docs/EXTENDING.md) for custom tools, confirmation, and command risk classification.
 
@@ -170,7 +171,6 @@ slack({
 	trigger: "mention",
 	reply: "thread",
 	streaming: true,
-	progress: { reaction: "eyes", message: "Thinking..." },
 });
 ```
 
@@ -199,7 +199,7 @@ Socket Mode does not require a signing secret unless you also use HTTP interacti
 
 See [`docs/SLACK.md`](docs/SLACK.md) for scopes, events, manifests, and common setup failures.
 
-Inbound Slack messages can be restricted with `allow`. Omitted `teams`, `channels`, and `users` allow all delivered events for that dimension. `channels` applies to non-DM channels only. `allow.dms` defaults to `true`. `trigger` defaults to `"mention"` for channels; accepted DMs always trigger.
+Inbound Slack messages can be restricted with `allow`. Omitted `teams`, `channels`, and `users` allow all delivered events for that dimension. `channels` applies to non-DM channels only. `allow.dms` defaults to `true`. `trigger` defaults to `"mention"` for top-level channel messages; thread replies and accepted DMs trigger by default. Use `threadTrigger: "mention"` to require mentions in thread replies. Slack progress defaults to an immediate `Thinking...` message plus an `eyes` reaction.
 
 ### Telegram
 
@@ -215,13 +215,12 @@ telegram({
 	},
 	trigger: "mention",
 	streaming: true,
-	progress: { message: "Thinking..." },
 });
 ```
 
 See [`docs/TELEGRAM.md`](docs/TELEGRAM.md) for BotFather setup and chat discovery.
 
-Inbound Telegram messages can be restricted with `allow`. Omitted `chats` and `users` allow all delivered updates for that dimension. `chats` applies to groups/channels only. `allow.dms` defaults to `true`. `trigger` defaults to `"mention"` for groups; accepted private chats always trigger.
+Inbound Telegram messages can be restricted with `allow`. Omitted `chats` and `users` allow all delivered updates for that dimension. `chats` applies to groups/channels only. `allow.dms` defaults to `true`. `trigger` defaults to `"mention"` for top-level groups; forum topic replies and accepted private chats trigger by default. Use `threadTrigger: "mention"` to require mentions in forum topics. Telegram progress defaults to an immediate `Thinking...` message when streaming is off.
 
 ### Discord
 
@@ -240,13 +239,12 @@ discord({
 	},
 	trigger: "mention",
 	streaming: true,
-	progress: { message: "Thinking..." },
 });
 ```
 
 See [`docs/DISCORD.md`](docs/DISCORD.md) for bot setup, intents, invite URLs, and ID discovery.
 
-Inbound Discord messages can be restricted with `allow`. Omitted `guilds`, `channels`, and `users` allow all delivered events for that dimension. `channels` applies to non-DM channels only. `allow.dms` defaults to `true`. `trigger` defaults to `"mention"` for guild channels; accepted DMs always trigger.
+Inbound Discord messages can be restricted with `allow`. Omitted `guilds`, `channels`, and `users` allow all delivered events for that dimension. `channels` applies to non-DM channels only. `allow.dms` defaults to `true`. `trigger` defaults to `"mention"` for top-level guild channels; Discord thread channels and accepted DMs trigger by default. Use `threadTrigger: "mention"` to require mentions in Discord threads. Discord progress defaults to an immediate `Thinking...` message when streaming is off.
 
 ### Webhook
 
@@ -357,6 +355,7 @@ pnpm exec heypi check --env .env --db ./heypi.db
 pnpm exec heypi slack check --env examples/slack-devops/.env
 pnpm exec heypi telegram observe --env examples/telegram-workout/.env
 pnpm exec heypi discord observe --env .env
+pnpm exec heypi approvals list --db ./heypi.db
 pnpm exec heypi jobs list --db examples/telegram-workout/heypi.db
 ```
 

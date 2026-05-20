@@ -59,7 +59,6 @@ const app = createHeypi({
 			trigger: "mention",
 			reply: "thread",
 			streaming: true,
-			progress: { reaction: "eyes", message: "Thinking..." },
 		}),
 		// Production HTTP mode:
 		// slack({

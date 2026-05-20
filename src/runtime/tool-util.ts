@@ -1,9 +1,15 @@
+import type { ApprovalPrompt } from "../core/types.js";
+
 export function text(value: string) {
 	return { content: [{ type: "text" as const, text: value }], details: { state: "ok" } };
 }
 
-export function toolText(value: string, terminate = false) {
-	return { content: [{ type: "text" as const, text: value }], details: { state: "ok" }, terminate };
+export function toolText(value: string, terminate = false, approval?: ApprovalPrompt) {
+	return {
+		content: [{ type: "text" as const, text: value }],
+		details: approval ? { state: "pending_approval", approval } : { state: "ok" },
+		terminate,
+	};
 }
 
 export function stringParam(params: unknown, key: string): string {

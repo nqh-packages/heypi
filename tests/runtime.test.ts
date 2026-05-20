@@ -249,6 +249,17 @@ test("confirmed heypi tools terminate the Pi turn while waiting for approval", a
 	const result = await out[0].execute("tool-call-1", {}, undefined, undefined, undefined as never);
 	assert.equal(result.terminate, true);
 	assert.match(result.content?.[0]?.type === "text" ? result.content[0].text : "", /approval-1/);
+	assert.deepEqual(result.details, {
+		state: "pending_approval",
+		approval: {
+			id: "approval-1",
+			callId: "call-1",
+			command: "delete_ticket",
+			runtime: "tool",
+			reason: "delete",
+			allowed: [],
+		},
+	});
 });
 
 test("custom tools add new names and override runtime tools", () => {

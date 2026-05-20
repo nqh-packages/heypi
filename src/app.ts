@@ -56,6 +56,7 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 		store: config.store,
 		callRunner,
 		agent,
+		approval: config.approval,
 		active,
 		logger: log,
 	});

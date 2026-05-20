@@ -17,6 +17,7 @@ export type SlackConfig = {
 	botToken: string;
 	allow?: SlackAllow;
 	trigger?: SlackTrigger;
+	threadTrigger?: SlackTrigger | false;
 	reply?: SlackReply;
 	replyBroadcast?: boolean;
 	progress?: SlackProgress | false;
@@ -118,6 +119,8 @@ export function slack(input: SlackConfig): Adapter {
 					type: msg.type,
 					isDm: slackDm(msg),
 					botUserId,
+					thread: Boolean(msg.thread_ts),
+					threadTrigger: input.threadTrigger,
 				});
 				if (!trigger.ok) {
 					log.debug("adapter.drop", { trace, adapter: "slack", channel, actor: msg.user, reason: trigger.reason });
@@ -131,8 +134,7 @@ export function slack(input: SlackConfig): Adapter {
 					actor: msg.user,
 					event: msg.client_msg_id ?? msg.ts,
 				});
-				const streaming = streamingEnabled(input.streaming);
-				const progress = slackProgress(input.progress, streaming);
+				const progress = slackProgress(input.progress);
 				const stream = slackReplyStream({
 					config: input.streaming,
 					client,
@@ -185,6 +187,7 @@ export function slack(input: SlackConfig): Adapter {
 								user: msg.user ?? "unknown",
 								text: out.text,
 								approval: out.approval,
+								thread: reply.thread,
 								delivery,
 							});
 							if (out.attachments?.length) {
@@ -193,6 +196,7 @@ export function slack(input: SlackConfig): Adapter {
 									channel,
 									user: msg.user ?? "unknown",
 									text: "File attachments cannot be sent privately on Slack.",
+									thread: reply.thread,
 									delivery,
 								});
 							}
@@ -353,14 +357,9 @@ function requiredSlackApp(app: App | undefined): App {
 	return app;
 }
 
-function streamingEnabled(input?: ReplyStreamOption): boolean {
-	return Boolean(input && (input === true || typeof input !== "object" || input.enabled !== false));
-}
-
-function slackProgress(input: SlackConfig["progress"], streaming: boolean): SlackProgress | undefined {
+function slackProgress(input: SlackConfig["progress"]): SlackProgress | undefined {
 	if (input === false) return undefined;
-	if (!streaming) return input;
-	return { ...(input ?? {}), message: false };
+	return input ?? { delayMs: 0 };
 }
 
 async function uploadSlackAttachments(input: {
@@ -459,20 +458,25 @@ async function postEphemeralChunks(input: {
 	user: string;
 	text: string;
 	approval?: { id: string; callId: string; reason: string; command: string };
+	thread?: string;
 	delivery: DeliveryQueue;
 }): Promise<void> {
 	const chunks = slackChunks(input.text, Boolean(input.approval));
 	for (let index = 0; index < chunks.length; index++) {
 		const blocks = index === 0 ? approvalBlocks(chunks[index], input.approval) : undefined;
-		await input.delivery.run(
-			() =>
-				input.client.chat.postEphemeral(
-					blocks
-						? { channel: input.channel, user: input.user, text: chunks[index], blocks }
-						: { channel: input.channel, user: input.user, text: chunks[index] },
-				),
-			{ adapter: "slack", channel: input.channel, user: input.user, retry: "send" },
-		);
+		const message = {
+			channel: input.channel,
+			user: input.user,
+			text: chunks[index],
+			thread_ts: input.thread,
+			...(blocks ? { blocks } : {}),
+		};
+		await input.delivery.run(() => input.client.chat.postEphemeral(message), {
+			adapter: "slack",
+			channel: input.channel,
+			user: input.user,
+			retry: "send",
+		});
 	}
 }
 
@@ -711,10 +715,18 @@ export function slackAllowed(
 
 export function slackTriggered(
 	trigger: SlackTrigger | undefined,
-	event: { text?: string; type?: string; isDm: boolean; botUserId?: string },
+	event: {
+		text?: string;
+		type?: string;
+		isDm: boolean;
+		botUserId?: string;
+		thread?: boolean;
+		threadTrigger?: SlackTrigger | false;
+	},
 ): { ok: true } | { ok: false; reason: string } {
 	if (event.isDm) return { ok: true };
 	if ((trigger ?? "mention") === "message") return { ok: true };
+	if (event.thread && (event.threadTrigger ?? "message") === "message") return { ok: true };
 	if (event.type === "app_mention") return { ok: true };
 	if (event.botUserId && event.text?.includes(`<@${event.botUserId}>`)) return { ok: true };
 	return { ok: false, reason: "mention_required" };
@@ -834,6 +846,7 @@ async function handleAction(input: {
 				channel,
 				user: actor,
 				text: out.text,
+				thread: context.threadTs ?? context.message,
 				delivery: input.delivery,
 			});
 			input.logger.debug("adapter.send", { trace, adapter: "slack", channel: context.channel, private: true });
@@ -842,7 +855,7 @@ async function handleAction(input: {
 		const channel = context.channel;
 		const message = context.message;
 		const chunks = slackChunks(out.text, true);
-		const first = chunks[0] ?? "";
+		const first = actionResultText(input.kind, context.actor, chunks[0] ?? "");
 		await input.delivery.run(
 			() =>
 				input.client.chat.update({
@@ -884,6 +897,12 @@ async function handleAction(input: {
 				.catch(() => undefined);
 		}
 	}
+}
+
+function actionResultText(kind: "approve" | "deny" | "cancel" | "status", actor: string, text: string): string {
+	if (kind === "approve") return [`Approved by <@${actor}>.`, text].filter(Boolean).join("\n\n");
+	if (kind === "deny") return [`Rejected by <@${actor}>.`, text].filter(Boolean).join("\n\n");
+	return text;
 }
 
 function cancelBlocks(text: string, id: string): SlackBlock[] {
@@ -949,7 +968,7 @@ function approvalBlocks(
 				},
 				{
 					type: "button",
-					text: { type: "plain_text", text: "Deny" },
+					text: { type: "plain_text", text: "Reject" },
 					style: "danger",
 					action_id: DENY,
 					value: approval.id,

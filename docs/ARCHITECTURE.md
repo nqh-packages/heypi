@@ -69,7 +69,7 @@ Inbound allowlists and channel membership are adapter concerns. Once an event is
 `src/io/handler.ts` is the provider-neutral request path. It:
 
 - normalizes text and attachments
-- parses control intents such as approve, deny, status, and cancel
+- parses control intents such as approvals, approve, deny, status, and cancel
 - creates or loads the thread
 - de-duplicates provider events
 - acquires a per-thread lock when the store supports locks

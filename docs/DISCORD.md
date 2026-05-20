@@ -40,6 +40,7 @@ discord({
     dms: true,
   },
   trigger: "mention",
+  threadTrigger: "message",
 });
 ```
 
@@ -94,6 +95,8 @@ Defaults:
 - `trigger` defaults to `"mention"` for guild channels
 - `trigger: "message"` makes every allowed channel message run the agent
 - accepted DMs always run the agent
+- Discord thread channel messages do not need to mention the bot by default
+- `threadTrigger` defaults to `"message"` for Discord threads; set `threadTrigger: "mention"` to require a mention in follow-up thread replies
 
 `allow.users` controls who may talk to the bot. `approval.approvers` controls who may approve tool calls. `jobs.scope` and `jobs.target` only affect scheduled outbound jobs.
 
@@ -106,13 +109,13 @@ discord({
 });
 ```
 
-`streaming` is off by default. Use `true` for sensible defaults, or pass `{ intervalMs, minChars, maxFailures }` to tune draft edits. Discord progress messages are suppressed while streaming is active to avoid duplicate visible replies.
+`streaming` is off by default. Use `true` for sensible defaults, or pass `{ intervalMs, minChars, maxFailures }` to tune draft edits. Discord progress defaults to an immediate `Thinking...` message when streaming is off. Progress messages are suppressed while streaming is active to avoid duplicate visible replies. Set `progress: false` to disable progress.
 
 Discord delivery calls are serialized by default. Provider rate limits are retried with backoff. Ambiguous timeouts are not retried for non-idempotent sends such as new messages or file uploads. Most apps do not need to configure this. If Discord needs slower pacing, set `delivery: { intervalMs: 500 }`; use `delivery: false` only for development or custom transport control.
 
 ## Conversation Model
 
-Discord does not have Slack-style message threads by default. heypi uses the Discord channel or DM ID as the conversation key. Discord server ID is stored as the provider `team` value.
+Discord thread channels are modeled as their own conversation because Discord gives them their own channel ID. Normal channels and DMs use the channel or DM ID as the conversation key. Discord server ID is stored as the provider `team` value.
 
 ## Common Failures
 

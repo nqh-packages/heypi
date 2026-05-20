@@ -17,6 +17,7 @@ export function parseIntent(input: { text: string; channel: string; actor: strin
 	const text = input.text.trim();
 	if (!text) return { kind: "help" };
 	if (text === "help") return { kind: "help" };
+	if (text === "approvals") return { kind: "approvals", channel: input.channel, actor: input.actor };
 
 	const bash = bashArg(text);
 	if (bash) return { kind: "bash", ...bash, channel: input.channel, actor: input.actor };

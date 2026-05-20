@@ -1,3 +1,8 @@
+---
+name: daily-checkin
+description: Use this skill for scheduled daily accountability checks and short training follow-ups.
+---
+
 # Daily Check-In
 
 Use this skill for scheduled daily check-ins and short accountability follow-ups.

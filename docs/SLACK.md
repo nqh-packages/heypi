@@ -127,6 +127,7 @@ slack({
     dms: true,
   },
   trigger: "mention",
+  threadTrigger: "message",
 });
 ```
 
@@ -139,6 +140,9 @@ Defaults:
 - `trigger` defaults to `"mention"` for channels
 - `trigger: "message"` makes every allowed channel message run the agent
 - accepted DMs always run the agent
+- thread replies do not need to mention the bot by default
+- `threadTrigger` defaults to `"message"` for threads; set `threadTrigger: "mention"` to require a mention in follow-up thread replies
+- private Slack replies, including unauthorized approval/status replies, are posted back into the current thread when Slack provides a thread timestamp
 
 `allow.users` controls who may talk to the bot. `approval.approvers` controls who may approve tool calls. `jobs.scope` and `jobs.target` only affect scheduled outbound jobs.
 
@@ -151,7 +155,9 @@ slack({
 });
 ```
 
-`streaming` is off by default. Use `true` for sensible defaults, or pass `{ intervalMs, minChars, maxFailures }` to tune draft edits. If Slack progress messages are configured, the visible progress message is suppressed while streaming is active; reactions can still be used.
+`streaming` is off by default. Use `true` for sensible defaults, or pass `{ intervalMs, minChars, maxFailures }` to tune draft edits. If Slack progress messages are configured, heypi can still post the progress message immediately and delete or replace it when the final reply is ready.
+
+Slack progress defaults to an immediate `Thinking...` message plus an `eyes` reaction. Set `progress: false` to disable progress, or pass `progress: { message: false }` to keep only the reaction.
 
 Slack delivery calls are serialized by default. Provider rate limits are retried with backoff. Ambiguous timeouts are not retried for non-idempotent sends such as new messages or file uploads. Most apps do not need to configure this. If Slack needs slower pacing, set `delivery: { intervalMs: 500 }`; use `delivery: false` only for development or custom transport control.
 

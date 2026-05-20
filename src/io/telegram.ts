@@ -19,6 +19,7 @@ export type TelegramConfig = {
 	pollTimeoutSeconds?: number;
 	allow?: TelegramAllow;
 	trigger?: TelegramTrigger;
+	threadTrigger?: TelegramTrigger | false;
 	progress?: TelegramProgress | false;
 	streaming?: ReplyStreamOption;
 	delivery?: DeliveryConfig | false;
@@ -175,6 +176,8 @@ async function handleUpdate(input: {
 		text: textOf(msg),
 		isDm: telegramDm(msg),
 		botUsername: input.botUsername,
+		thread: Boolean(msg.message_thread_id),
+		threadTrigger: input.config.threadTrigger,
 	});
 	if (!trigger.ok) {
 		input.start.logger.debug("adapter.drop", { trace, adapter: "telegram", channel, actor, reason: trigger.reason });
@@ -504,7 +507,7 @@ function streamingEnabled(input?: ReplyStreamOption): boolean {
 
 function telegramProgress(input: TelegramConfig["progress"], streaming: boolean): TelegramProgress | undefined {
 	if (input === false || streaming) return undefined;
-	return input;
+	return input ?? { delayMs: 0 };
 }
 
 async function uploadTelegramAttachments(input: {
@@ -719,10 +722,17 @@ export function telegramAllowed(
 
 export function telegramTriggered(
 	trigger: TelegramTrigger | undefined,
-	event: { text?: string; isDm: boolean; botUsername?: string },
+	event: {
+		text?: string;
+		isDm: boolean;
+		botUsername?: string;
+		thread?: boolean;
+		threadTrigger?: TelegramTrigger | false;
+	},
 ): { ok: true } | { ok: false; reason: string } {
 	if (event.isDm) return { ok: true };
 	if ((trigger ?? "mention") === "message") return { ok: true };
+	if (event.thread && (event.threadTrigger ?? "message") === "message") return { ok: true };
 	if (event.botUsername && telegramMentions(event.text, event.botUsername)) return { ok: true };
 	return { ok: false, reason: "mention_required" };
 }
@@ -761,7 +771,7 @@ function approvalMarkup(approval: NonNullable<Outbound["approval"]>): TelegramRe
 		inline_keyboard: [
 			[
 				{ text: "Approve", callback_data: `${APPROVE}:${approval.id}` },
-				{ text: "Deny", callback_data: `${DENY}:${approval.id}` },
+				{ text: "Reject", callback_data: `${DENY}:${approval.id}` },
 			],
 		],
 	};

@@ -1,3 +1,8 @@
+---
+name: onboarding
+description: Use this skill when the user is new, changes goals, or lacks enough saved profile context for a useful workout plan.
+---
+
 # Onboarding
 
 Use this skill when the user is new, asks to set goals, or has not yet shared enough context to build a useful workout plan.

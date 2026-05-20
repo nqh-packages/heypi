@@ -73,7 +73,7 @@ test("authorized approval executes the pending command", async () => {
 		actor: "U_ALLOWED",
 	});
 
-	assert.equal(approved.text.includes("state=done"), true);
+	assert.match(approved.text, /Result: `done`/);
 	assert.equal(approvals.rows[0].state, "approved");
 	assert.equal(approvals.rows[0].resolvedBy, "U_ALLOWED");
 	assert.equal(calls.rows[0].state, "done");
@@ -99,7 +99,7 @@ test("command policy allow pattern bypasses default approval pattern", async () 
 
 	const reply = await callRunner.bash("C1", "U_REQUESTER", "curl -I https://example.com");
 
-	assert.match(reply.text, /state=done/);
+	assert.match(reply.text, /Result: `done`/);
 	assert.equal(approvals.rows.length, 0);
 	assert.equal(calls.rows[0].policyReason, "allowed by /^curl -I /");
 });
@@ -164,7 +164,7 @@ test("authorized denial logs approval.denied", async () => {
 		actor: "U_ALLOWED",
 	});
 
-	assert.match(denied.text, /state=blocked/);
+	assert.match(denied.text, /Action rejected/);
 	assert.equal(approvals.rows[0].state, "denied");
 	assert.equal(
 		events.some((event) => event.event === "approval.denied"),

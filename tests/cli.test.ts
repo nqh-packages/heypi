@@ -73,6 +73,36 @@ test("cli db migrate and jobs commands operate on sqlite store", async () => {
 	}
 });
 
+test("cli approvals commands inspect pending approvals", async () => {
+	const root = await mkdtemp(join(tmpdir(), "heypi-cli-approvals-"));
+	try {
+		const path = join(root, "heypi.db");
+		assert.match(cli(["db", "migrate", "--db", path]), /ok: database migrated/);
+		assert.match(cli(["approvals", "list", "--db", path]), /No pending approvals/);
+
+		const store = sqliteStore({ path });
+		await store.setup();
+		const approval = await store.approvals.create({
+			callId: "call-1",
+			channel: "slack:T1:C1",
+			command: "hosts_upsert",
+			runtime: "tool",
+			reason: "Add host",
+			requestedBy: "U1",
+		});
+
+		assert.match(cli(["approvals", "list", "--db", path]), new RegExp(approval.id));
+		assert.match(cli(["approvals", "show", approval.id, "--db", path]), /reason: Add host/);
+		const json = JSON.parse(cli(["approvals", "list", "--db", path, "--json"])) as Array<{ id: string }>;
+		assert.deepEqual(
+			json.map((row) => row.id),
+			[approval.id],
+		);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("cli errors do not echo supplied provider tokens", () => {
 	const token = "xoxb" + "-secret-token";
 	const result = spawnSync(process.execPath, [CLI, "slack", "check", "--bot-token", token], {

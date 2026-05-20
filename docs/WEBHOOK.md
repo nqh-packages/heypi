@@ -131,6 +131,7 @@ For short requests, pass `sync: true`. Sync requests wait only up to the configu
 Webhook uses the same text fallback commands as other adapters:
 
 ```text
+approvals
 approve <approval-id>
 deny <approval-id>
 status

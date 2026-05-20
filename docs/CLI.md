@@ -37,6 +37,15 @@ heypi discord invite --client-id <application-id>
 heypi discord env
 ```
 
+Approvals:
+
+```bash
+heypi approvals list --db heypi.db [--json]
+heypi approvals show <id> --db heypi.db [--json]
+```
+
+Approval CLI commands are read-only. Approve or reject from the original chat provider so the audit trail records the provider actor that made the decision.
+
 Jobs:
 
 ```bash

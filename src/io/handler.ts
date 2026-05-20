@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { ModelConfig } from "../config.js";
+import type { ApprovalConfig, ModelConfig } from "../config.js";
 import { ActiveRuns, cancelReply, isAbortError } from "../core/active.js";
 import type { CallRunner } from "../core/calls.js";
-import { helpReply, renderThreadStatus } from "../core/format.js";
+import { helpReply, renderApprovals, renderThreadStatus } from "../core/format.js";
 import { normalizeText, parseIntent } from "../core/intent.js";
 import { type Logger, logError, logger, message, redact, userError } from "../core/log.js";
 import type { ApprovalPrompt, Intent, ReplyAttachment } from "../core/types.js";
@@ -86,6 +86,7 @@ export function createHandler(input: {
 	store: Store;
 	callRunner: CallRunner;
 	agent: Agent;
+	approval?: ApprovalConfig;
 	active?: ActiveRuns;
 	logger?: Logger;
 }): Handler {
@@ -121,6 +122,14 @@ export function createHandler(input: {
 		});
 		const lockKey = `thread:${thread.id}`;
 		const lockOwner = `${trace}:${randomUUID()}`;
+		if (intent.kind === "approvals") {
+			if (!canListApprovals(input.approval, msg.actor)) {
+				return { text: "You are not allowed to view pending approvals.", private: true };
+			}
+			const all = await input.store.approvals.listPending({ limit: 25 });
+			const rows = all.filter((row) => approvalVisible(row, input.approval, msg, thread.id));
+			return renderApprovals(rows);
+		}
 		if (intent.kind === "thread_status") {
 			const [turns, calls, approvals, currentLock] = await Promise.all([
 				input.store.turns.listForThread(thread.id, { limit: 5 }),
@@ -380,10 +389,10 @@ async function transaction<T>(store: Store, fn: (store: Store) => Promise<T>): P
 }
 
 function requiresThreadLock(kind: string): boolean {
-	return kind !== "help" && kind !== "status";
+	return kind !== "help" && kind !== "status" && kind !== "approvals";
 }
 
-type CallIntent = Exclude<Intent, { kind: "ask" | "help" | "cancel" | "thread_status" }>;
+type CallIntent = Exclude<Intent, { kind: "ask" | "help" | "cancel" | "approvals" | "thread_status" }>;
 
 function scopedIntent(intent: CallIntent, msg: Inbound): CallIntent {
 	const channel = scopeKey(msg);
@@ -396,6 +405,22 @@ function scopedIntent(intent: CallIntent, msg: Inbound): CallIntent {
 
 function scopeKey(msg: Pick<Inbound, "provider" | "team" | "channel">): string {
 	return `${msg.provider}:${msg.team ?? ""}:${msg.channel}`;
+}
+
+function canListApprovals(config: ApprovalConfig | undefined, actor: string): boolean {
+	const approvers = config?.approvers ?? [];
+	return approvers.length === 0 || approvers.includes(actor);
+}
+
+function approvalVisible(
+	row: { channel: string; threadId: string | null },
+	config: ApprovalConfig | undefined,
+	msg: Pick<Inbound, "provider" | "team">,
+	threadId: string,
+): boolean {
+	const approvers = config?.approvers ?? [];
+	if (!approvers.length) return row.threadId === threadId;
+	return row.channel.startsWith(`${msg.provider}:${msg.team ?? ""}:`);
 }
 
 function data(input: unknown, trace: string, attachments?: Attachment[], model?: ModelConfig): Record<string, unknown> {

@@ -113,4 +113,6 @@ slack({
 });
 ```
 
+With these defaults, top-level channel messages require a mention, thread replies do not, and Slack shows an immediate `Thinking...` progress message while the model runs.
+
 In Slack app settings, set Event Subscriptions and Interactivity URLs to `https://<host>/slack/events`, or to the custom `path` you configured.

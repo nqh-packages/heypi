@@ -82,7 +82,7 @@ function wrapTool(
 				execute,
 				signal,
 			});
-			return toolText(reply.text, Boolean(reply.approval));
+			return toolText(reply.text, Boolean(reply.approval), reply.approval);
 		},
 	};
 }
@@ -140,7 +140,7 @@ function runtimeTools(
 			execute: async (toolCallId, params, signal) => {
 				const command = stringParam(params, "command");
 				const reply = await callRunner.bash(channel, actor, command, { ...context, toolCall: toolCallId }, signal);
-				return toolText(reply.text, Boolean(reply.approval));
+				return toolText(reply.text, Boolean(reply.approval), reply.approval);
 			},
 		});
 	}

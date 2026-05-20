@@ -168,9 +168,9 @@ test("handler returns private thread status", async () => {
 		});
 
 		assert.equal(out?.private, true);
-		assert.match(out?.text ?? "", /thread status/);
-		assert.match(out?.text ?? "", /active=/);
-		assert.match(out?.text ?? "", /pending approvals:/);
+		assert.match(out?.text ?? "", /Thread status/);
+		assert.match(out?.text ?? "", /Active:/);
+		assert.match(out?.text ?? "", /Pending approvals:/);
 		assert.match(out?.text ?? "", /npm test/);
 	} finally {
 		await db.cleanup();

@@ -200,7 +200,81 @@ test("handler scopes approvals by provider team and channel", async () => {
 			thread: "C1:1",
 			text: `approve ${approvalId}`,
 		});
-		assert.match(approved?.text ?? "", /state=done/);
+		assert.match(approved?.text ?? "", /Result: `done`/);
+	} finally {
+		await db.cleanup();
+	}
+});
+
+test("approvals command lists pending approvals for approvers only", async () => {
+	const db = await tempDb();
+	try {
+		const store = sqliteStore({ path: db.path });
+		await store.setup();
+		const approval = { approvers: ["U_ALLOWED"] };
+		const handler = createHandler({
+			agentId: "a",
+			store,
+			approval,
+			callRunner: new CallRunner(
+				store.calls,
+				store.approvals,
+				new Queue({ maxConcurrent: 1, maxPerChat: 1 }),
+				{
+					name: "just-bash",
+					root: ".",
+					capabilities: { bash: true },
+					bash: async () => ({ code: 0, out: "ok", err: "", ms: 1 }),
+				},
+				approval,
+				undefined,
+				store.transaction,
+			),
+			agent: {
+				ask: async () => ({ text: "ok" }),
+				continue: async () => ({ text: "ok" }),
+			},
+		});
+
+		const requested = await handler({
+			trace: "trace-approval",
+			provider: "slack",
+			team: "T1",
+			eventId: "event-approval",
+			channel: "C1",
+			actor: "U_REQUESTER",
+			thread: "C1:1",
+			text: "bash curl https://example.com",
+		});
+		const approvalId = requested?.approval?.id;
+		assert.ok(approvalId);
+
+		const denied = await handler({
+			trace: "trace-approvals-denied",
+			provider: "slack",
+			team: "T1",
+			eventId: "event-approvals-denied",
+			channel: "C1",
+			actor: "U_OTHER",
+			thread: "D1:D1",
+			text: "approvals",
+		});
+		assert.equal(denied?.private, true);
+		assert.match(denied?.text ?? "", /not allowed/);
+
+		const listed = await handler({
+			trace: "trace-approvals",
+			provider: "slack",
+			team: "T1",
+			eventId: "event-approvals",
+			channel: "D1",
+			actor: "U_ALLOWED",
+			thread: "D1:D1",
+			text: "approvals",
+		});
+		assert.equal(listed?.private, true);
+		assert.match(listed?.text ?? "", new RegExp(approvalId));
+		assert.match(listed?.text ?? "", /curl/);
 	} finally {
 		await db.cleanup();
 	}

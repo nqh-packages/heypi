@@ -27,6 +27,7 @@ export type DiscordConfig = {
 	token: string;
 	allow?: DiscordAllow;
 	trigger?: DiscordTrigger;
+	threadTrigger?: DiscordTrigger | false;
 	progress?: DiscordProgress | false;
 	streaming?: ReplyStreamOption;
 	delivery?: DeliveryConfig | false;
@@ -123,6 +124,8 @@ async function handleMessage(input: {
 		text: msg.content,
 		isDm: dm,
 		mentioned: input.client.user ? msg.mentions.has(input.client.user) : false,
+		thread: discordThread(msg),
+		threadTrigger: input.config.threadTrigger,
 	});
 	if (!trigger.ok) {
 		input.start.logger.debug("adapter.drop", { trace, adapter: "discord", channel, actor, reason: trigger.reason });
@@ -500,7 +503,7 @@ function approvalComponents(approval: NonNullable<Outbound["approval"]>) {
 	return [
 		new ActionRowBuilder<ButtonBuilder>().addComponents(
 			new ButtonBuilder().setCustomId(`${APPROVE}:${approval.id}`).setLabel("Approve").setStyle(ButtonStyle.Success),
-			new ButtonBuilder().setCustomId(`${DENY}:${approval.id}`).setLabel("Deny").setStyle(ButtonStyle.Danger),
+			new ButtonBuilder().setCustomId(`${DENY}:${approval.id}`).setLabel("Reject").setStyle(ButtonStyle.Danger),
 		),
 	];
 }
@@ -536,13 +539,18 @@ function isDm(msg: Message): boolean {
 	return msg.channel.type === ChannelType.DM;
 }
 
+function discordThread(msg: Message): boolean {
+	const channel = msg.channel as { isThread?: () => boolean };
+	return typeof channel.isThread === "function" && channel.isThread();
+}
+
 function streamingEnabled(input?: ReplyStreamOption): boolean {
 	return Boolean(input && (input === true || typeof input !== "object" || input.enabled !== false));
 }
 
 function discordProgress(input: DiscordConfig["progress"], streaming: boolean): DiscordProgress | undefined {
 	if (input === false || streaming) return undefined;
-	return input;
+	return input ?? { delayMs: 0 };
 }
 
 export function discordAllowed(
@@ -561,10 +569,17 @@ export function discordAllowed(
 
 export function discordTriggered(
 	input: DiscordTrigger | undefined,
-	event: { text?: string; isDm: boolean; mentioned: boolean },
+	event: {
+		text?: string;
+		isDm: boolean;
+		mentioned: boolean;
+		thread?: boolean;
+		threadTrigger?: DiscordTrigger | false;
+	},
 ): { ok: true } | { ok: false; reason: string } {
-	const mode = input ?? (event.isDm ? "message" : "mention");
-	if (mode === "message") return { ok: true };
+	if (event.isDm) return { ok: true };
+	if ((input ?? "mention") === "message") return { ok: true };
+	if (event.thread && (event.threadTrigger ?? "message") === "message") return { ok: true };
 	if (event.mentioned) return { ok: true };
 	return { ok: false, reason: "mention required" };
 }

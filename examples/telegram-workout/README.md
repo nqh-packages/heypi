@@ -13,7 +13,7 @@ This is the simpler boilerplate example. It shows the normal heypi shape without
 
 - Telegram long polling adapter.
 - `SYSTEM.md` / `AGENTS.md` prompt files.
-- Two small custom tools for local Markdown memory.
+- Three small custom tools for local Markdown memory: `get_profile`, `save_profile`, and `log_workout`.
 - A heartbeat job for daily check-ins.
 - Optional chat/user allowlists.
 
