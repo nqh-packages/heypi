@@ -1,6 +1,5 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import type {
 	BashOptions,
 	CommandName,
@@ -12,8 +11,8 @@ import type {
 } from "just-bash";
 import type { Logger } from "./core/log.js";
 import type { SchedulerConfig } from "./core/scheduler.js";
-import type { CommandPolicyConfig } from "./core/types.js";
-import type { AttachmentStore } from "./io/attachments.js";
+import type { AgentToolDefinition } from "./core-tools.js";
+import type { AttachmentProcessingConfig, AttachmentStore } from "./io/attachments.js";
 import type { Adapter } from "./io/handler.js";
 import type { RuntimeName } from "./runtime/types.js";
 import type { Store } from "./store/types.js";
@@ -21,6 +20,7 @@ import type { Store } from "./store/types.js";
 export type ModelConfig = {
 	provider: string;
 	name: string;
+	verbosity?: "low" | "medium" | "high";
 };
 
 export type AgentContextInput = {
@@ -52,7 +52,7 @@ export type AgentConfig = {
 	context?: AgentContextProvider[];
 	skills?: string[];
 	extensions?: string[];
-	tools?: ToolDefinition[];
+	tools?: AgentToolDefinition[];
 };
 
 export type JustBashConfig = {
@@ -96,12 +96,12 @@ export type DockerConfig = {
 export type AttachmentConfig = {
 	store?: AttachmentStore;
 	maxBytes?: number;
+	process?: AttachmentProcessingConfig;
 };
 
 export type ApprovalConfig = {
 	approvers?: string[];
 	expiresInMs?: number;
-	commands?: CommandPolicyConfig;
 };
 
 export type HeypiConfig = {

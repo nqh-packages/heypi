@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CallRunner } from "../src/core/calls.js";
 import type { Logger } from "../src/core/log.js";
+import { commandConfirm } from "../src/core/policy.js";
 import type { CallState } from "../src/core/types.js";
 import { Queue } from "../src/runtime/queue.js";
 import type { Runtime } from "../src/runtime/types.js";
@@ -29,6 +30,8 @@ test("approval approvers reject unauthorized actors and keep approval pending", 
 			approvers: ["U_ALLOWED"],
 		},
 		captureLogger(events),
+		undefined,
+		commandConfirm(),
 	);
 
 	const requested = await callRunner.bash("C1", "U_REQUESTER", "curl https://example.com");
@@ -63,6 +66,8 @@ test("authorized approval executes the pending command", async () => {
 			approvers: ["U_ALLOWED"],
 		},
 		captureLogger(events),
+		undefined,
+		commandConfirm(),
 	);
 
 	await callRunner.bash("C1", "U_REQUESTER", "curl https://example.com");
@@ -83,7 +88,7 @@ test("authorized approval executes the pending command", async () => {
 	);
 });
 
-test("command policy allow pattern bypasses default approval pattern", async () => {
+test("command confirmation allow pattern bypasses default approval pattern", async () => {
 	const calls = new FakeCalls();
 	const approvals = new FakeApprovals();
 	const callRunner = new CallRunner(
@@ -94,14 +99,14 @@ test("command policy allow pattern bypasses default approval pattern", async () 
 		{},
 		noLogger(),
 		undefined,
-		{ allow: [/^curl -I /] },
+		commandConfirm({ allow: [/^curl -I /] }),
 	);
 
 	const reply = await callRunner.bash("C1", "U_REQUESTER", "curl -I https://example.com");
 
 	assert.match(reply.text, /Result: `done`/);
 	assert.equal(approvals.rows.length, 0);
-	assert.equal(calls.rows[0].policyReason, "allowed by /^curl -I /");
+	assert.equal(calls.rows[0].policyReason, "tool default");
 });
 
 test("authorized approval executes a confirmed custom tool", async () => {
@@ -154,6 +159,8 @@ test("authorized denial logs approval.denied", async () => {
 		runtime(),
 		{ approvers: ["U_ALLOWED"] },
 		captureLogger(events),
+		undefined,
+		commandConfirm(),
 	);
 
 	await callRunner.bash("C1", "U_REQUESTER", "curl https://example.com");
@@ -164,7 +171,9 @@ test("authorized denial logs approval.denied", async () => {
 		actor: "U_ALLOWED",
 	});
 
-	assert.match(denied.text, /Action rejected/);
+	assert.match(denied.text, /Approval required/);
+	assert.match(denied.text, /curl https:\/\/example.com/);
+	assert.doesNotMatch(denied.text, /Use the buttons below/);
 	assert.equal(approvals.rows[0].state, "denied");
 	assert.equal(
 		events.some((event) => event.event === "approval.denied"),
@@ -183,6 +192,8 @@ test("expired approval logs approval.expired", async () => {
 		runtime(),
 		{ approvers: ["U_ALLOWED"], expiresInMs: -1 },
 		captureLogger(events),
+		undefined,
+		commandConfirm(),
 	);
 
 	await callRunner.bash("C1", "U_REQUESTER", "curl https://example.com");
@@ -202,6 +213,119 @@ test("expired approval logs approval.expired", async () => {
 	);
 });
 
+test("expired approval can replace the original approval surface", async () => {
+	const calls = new FakeCalls();
+	const approvals = new FakeApprovals();
+	const callRunner = new CallRunner(
+		calls,
+		approvals,
+		new Queue({ maxConcurrent: 1, maxPerChat: 1 }),
+		runtime(),
+		{ approvers: ["U_ALLOWED"], expiresInMs: -1 },
+		noLogger(),
+		undefined,
+		commandConfirm(),
+	);
+
+	await callRunner.bash("C1", "U_REQUESTER", "curl https://example.com");
+	let replacement = "";
+	const expired = await callRunner.handle(
+		{
+			kind: "approve",
+			approvalId: approvals.rows[0].id,
+			channel: "C1",
+			actor: "U_ALLOWED",
+		},
+		{},
+		undefined,
+		undefined,
+		async (out) => {
+			replacement = out.text;
+		},
+	);
+
+	assert.equal(expired.silent, true);
+	assert.match(replacement, /Approval expired/);
+	assert.match(replacement, /curl https:\/\/example.com/);
+	assert.doesNotMatch(replacement, /Use the buttons below/);
+	assert.equal(approvals.rows[0].state, "denied");
+	assert.equal(calls.rows[0].state, "blocked");
+});
+
+test("expired denial can replace the original approval surface", async () => {
+	const calls = new FakeCalls();
+	const approvals = new FakeApprovals();
+	const callRunner = new CallRunner(
+		calls,
+		approvals,
+		new Queue({ maxConcurrent: 1, maxPerChat: 1 }),
+		runtime(),
+		{ approvers: ["U_ALLOWED"], expiresInMs: -1 },
+		noLogger(),
+		undefined,
+		commandConfirm(),
+	);
+
+	await callRunner.bash("C1", "U_REQUESTER", "curl https://example.com");
+	let replacement = "";
+	const expired = await callRunner.handle(
+		{
+			kind: "deny",
+			approvalId: approvals.rows[0].id,
+			channel: "C1",
+			actor: "U_ALLOWED",
+		},
+		{},
+		undefined,
+		undefined,
+		async (out) => {
+			replacement = out.text;
+		},
+	);
+
+	assert.equal(expired.silent, true);
+	assert.match(replacement, /Approval expired/);
+	assert.match(replacement, /curl https:\/\/example.com/);
+	assert.doesNotMatch(replacement, /Use the buttons below/);
+	assert.equal(approvals.rows[0].state, "denied");
+	assert.equal(calls.rows[0].state, "blocked");
+});
+
+test("approval acknowledgement preserves the approved action summary", async () => {
+	const calls = new FakeCalls();
+	const approvals = new FakeApprovals();
+	const callRunner = new CallRunner(
+		calls,
+		approvals,
+		new Queue({ maxConcurrent: 1, maxPerChat: 1 }),
+		runtime(),
+		{ approvers: ["U_ALLOWED"] },
+		noLogger(),
+		undefined,
+		commandConfirm(),
+	);
+
+	await callRunner.bash("C1", "U_REQUESTER", "curl https://example.com");
+	let acknowledged = "";
+	await callRunner.handle(
+		{
+			kind: "approve",
+			approvalId: approvals.rows[0].id,
+			channel: "C1",
+			actor: "U_ALLOWED",
+		},
+		{},
+		undefined,
+		async (out) => {
+			acknowledged = out.text;
+		},
+	);
+
+	assert.match(acknowledged, /Approval required/);
+	assert.match(acknowledged, /curl https:\/\/example.com/);
+	assert.doesNotMatch(acknowledged, /Use the buttons below/);
+});
+
 test("resolved approval logs approval.already_resolved", async () => {
 	const calls = new FakeCalls();
 	const approvals = new FakeApprovals();
@@ -213,6 +337,8 @@ test("resolved approval logs approval.already_resolved", async () => {
 		runtime(),
 		{ approvers: ["U_ALLOWED"] },
 		captureLogger(events),
+		undefined,
+		commandConfirm(),
 	);
 
 	await callRunner.bash("C1", "U_REQUESTER", "curl https://example.com");

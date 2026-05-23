@@ -155,11 +155,29 @@ slack({
 });
 ```
 
-`streaming` is off by default. Use `true` for sensible defaults, or pass `{ intervalMs, minChars, maxFailures }` to tune draft edits. If Slack progress messages are configured, heypi can still post the progress message immediately and delete or replace it when the final reply is ready.
+`streaming` is off by default. Use `true` for sensible defaults, or pass `{ intervalMs, minChars, maxFailures }` to tune draft edits. Slack still posts the configured progress message immediately and deletes or replaces it when the final reply is ready.
 
-Slack progress defaults to an immediate `Thinking...` message plus an `eyes` reaction. Set `progress: false` to disable progress, or pass `progress: { message: false }` to keep only the reaction.
+Slack progress defaults to an immediate `Thinking...` message. Top-level channel messages also get an `eyes` reaction. Thread replies, DMs, and approval continuations do not get the reaction. Set `progress: false` to disable progress, or pass `progress: { message: false }` to keep only the reaction where reactions apply.
 
 Slack delivery calls are serialized by default. Provider rate limits are retried with backoff. Ambiguous timeouts are not retried for non-idempotent sends such as new messages or file uploads. Most apps do not need to configure this. If Slack needs slower pacing, set `delivery: { intervalMs: 500 }`; use `delivery: false` only for development or custom transport control.
+
+## Approvals
+
+Approval cards use Slack buttons. When an approver clicks **Approve**, heypi updates the original approval message immediately, keeps the approval details visible, and removes the buttons:
+
+```text
+✅ Approval `approval-id` approved by <@U123>.
+```
+
+If the approved command or tool continues running, Slack posts a follow-up `Thinking...` progress message in the same thread and replaces it with the result. Rejections also keep the approval details visible and remove the buttons:
+
+```text
+⛔ Approval `approval-id` rejected by <@U123>.
+```
+
+Unauthorized approval attempts are private replies in the current thread when Slack provides a thread timestamp.
+
+Expired approval clicks keep the approval details visible, mark the approval expired, and remove the buttons.
 
 ## Common Failures
 

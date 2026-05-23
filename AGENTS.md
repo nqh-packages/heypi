@@ -17,6 +17,7 @@
 - Prefer function-first modules and small files over class-heavy designs.
 - Keep module responsibilities narrow: orchestration in one place, side effects in clear adapters.
 - Define explicit boundary contracts (typed inputs/outputs, error shape, side effects) and keep interface surfaces small and stable.
+- When changing adapter/channel behavior, align Slack, Telegram, Discord, and webhook where the behavior is shared. If a change is intentionally channel-specific, state why and keep the exception documented in code or docs.
 
 ## Code Style
 - Keep control flow explicit. Favor readable loops and state transitions over clever abstractions.

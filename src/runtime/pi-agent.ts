@@ -8,10 +8,13 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@mariozechner/pi-coding-agent";
-import type { AgentConfig, AgentContextBlock, AgentContextInput } from "../config.js";
+import type { AgentConfig, AgentContextBlock, AgentContextInput, ModelConfig } from "../config.js";
 import type { CallRunner } from "../core/calls.js";
+import { textContent } from "../core/content.js";
 import { type Logger, logError, logger, redact, userError } from "../core/log.js";
 import type { ApprovalPrompt } from "../core/types.js";
+import { splitTools } from "../core-tools.js";
+import { type AttachmentProcessingConfig, attachmentInput } from "../io/attachments.js";
 import type { ReplyStream } from "../io/reply-stream.js";
 import type { Messages, Sessions, StoredMessage } from "../store/types.js";
 import type { Agent, AgentReq, AgentRes } from "./agent.js";
@@ -19,8 +22,10 @@ import { tools } from "./tools.js";
 import type { Runtime } from "./types.js";
 
 const DEFAULT_SYSTEM = [
-	"You are a concise team assistant.",
+	"You are a concise assistant.",
 	"Use available tools when they are needed to answer or act.",
+	"Prefer dedicated read, search, find, and list tools over bash for file exploration.",
+	"Use bash for shell tasks, command-line inspection, and public documentation lookup when appropriate.",
 	"If approval is required, tell the user how to approve or deny the action.",
 	"Keep responses short, accurate, and task-focused.",
 ].join("\n");
@@ -31,6 +36,7 @@ export type PiAgentInput = {
 	runtime: Runtime;
 	messages: Messages;
 	sessions: Sessions;
+	attachments?: AttachmentProcessingConfig;
 	logger?: Logger;
 };
 
@@ -39,7 +45,8 @@ export class PiAgent implements Agent {
 
 	async ask(req: AgentReq): Promise<AgentRes> {
 		const history = await this.input.sessions.load(req.threadId, req.inputMessageId);
-		const session = await this.create(req.channel, req.actor, history, {
+		const replayHistory = promptReplayHistory(history);
+		const session = await this.create(req.channel, req.actor, replayHistory, {
 			trace: req.trace,
 			agent: this.input.agent.id,
 			thread: req.threadId,
@@ -47,7 +54,7 @@ export class PiAgent implements Agent {
 			message: req.inputMessageId,
 			model: req.model,
 		});
-		return await this.run({ mode: "prompt", session, generatedAt: history.length + 1, req });
+		return await this.run({ mode: "prompt", session, generatedAt: replayHistory.length + 1, req });
 	}
 
 	async continue(req: Omit<AgentReq, "text" | "inputMessageId">): Promise<AgentRes> {
@@ -138,7 +145,16 @@ export class PiAgent implements Agent {
 		else req.signal?.addEventListener("abort", abort, { once: true });
 		try {
 			if (mode === "continue") await session.agent.continue();
-			else await session.prompt(req.text, { expandPromptTemplates: false });
+			else {
+				const prompt = await attachmentInput(
+					this.input.runtime,
+					req.text,
+					req.attachments,
+					this.input.attachments,
+					log,
+				);
+				await session.prompt(prompt.text, { expandPromptTemplates: false, images: prompt.images });
+			}
 		} finally {
 			req.signal?.removeEventListener("abort", abort);
 			unsub();
@@ -224,6 +240,7 @@ export class PiAgent implements Agent {
 			trace: context.trace,
 		});
 		const loader = await resourceLoader(agent, settings, log, contextBlocks);
+		const agentTools = splitTools(agent.tools);
 		const customTools = tools({
 			runtime: this.input.runtime,
 			callRunner: this.input.callRunner,
@@ -231,7 +248,8 @@ export class PiAgent implements Agent {
 			channel,
 			actor,
 			context,
-			custom: agent.tools,
+			core: agentTools.core,
+			custom: agentTools.custom,
 			logger: log,
 		});
 		const activeTools = [...extensionToolNames(loader), ...customTools.map((tool) => tool.name)];
@@ -248,10 +266,31 @@ export class PiAgent implements Agent {
 			customTools,
 		});
 		if (modelFallbackMessage) throw new Error(modelFallbackMessage);
+		configureModelPayload(session, modelConfig);
 		session.setActiveToolsByName(activeTools);
 		session.state.messages = history;
 		return session;
 	}
+}
+
+function configureModelPayload(session: AgentSession, model: ModelConfig): void {
+	if (!model.verbosity) return;
+	const previous = session.agent.onPayload;
+	session.agent.onPayload = async (payload, piModel) => {
+		const next = previous ? await previous(payload, piModel) : undefined;
+		return applyModelPayloadConfig(next ?? payload, model);
+	};
+}
+
+export function applyModelPayloadConfig(payload: unknown, model: ModelConfig): unknown {
+	if (!model.verbosity) return payload;
+	if (!plainObject(payload)) return payload;
+	const text = plainObject(payload.text) ? payload.text : {};
+	return { ...payload, text: { ...text, verbosity: model.verbosity } };
+}
+
+function plainObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function resourceLoader(
@@ -304,6 +343,37 @@ export function approvalFromMessages(messages: StoredMessage[]): ApprovalPrompt 
 		if (approval) return approval;
 	}
 	return undefined;
+}
+
+/**
+ * Converts persisted history for a new user prompt into plain replayable context.
+ * Side effect: old tool calls/results are not replayed as provider tool protocol.
+ */
+export function promptReplayHistory(messages: StoredMessage[]): StoredMessage[] {
+	return messages.flatMap((message) => {
+		if (message.role === "toolResult") {
+			const text = textContent(message.content).trim();
+			if (!text) return [];
+			const tool = typeof message.toolName === "string" && message.toolName ? message.toolName : "tool";
+			return [
+				{
+					role: "user",
+					content: `[${tool} result]\n${text}`,
+					timestamp: message.timestamp,
+				} as StoredMessage,
+			];
+		}
+		if (message.role !== "assistant" || !Array.isArray(message.content)) return [message];
+		const content = message.content.filter(
+			(part): part is { type: "text"; text: string } =>
+				Boolean(part) &&
+				typeof part === "object" &&
+				(part as { type?: unknown }).type === "text" &&
+				typeof (part as { text?: unknown }).text === "string" &&
+				(part as { text: string }).text.trim().length > 0,
+		);
+		return content.length > 0 ? [{ ...message, content } as StoredMessage] : [];
+	});
 }
 
 function approvalFromDetails(details: unknown): ApprovalPrompt | undefined {

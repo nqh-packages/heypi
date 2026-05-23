@@ -208,6 +208,7 @@ export interface Turns {
 	}): Promise<Turn>;
 	getByTrace(threadId: string, trace: string): Promise<Turn | undefined>;
 	listForThread(threadId: string, input?: { limit?: number }): Promise<Turn[]>;
+	listRunning?(input?: { agent?: string; limit?: number }): Promise<Turn[]>;
 	finish(id: string, input: { state: TurnState; resultMessageId?: string }): Promise<void>;
 }
 
@@ -263,6 +264,7 @@ export interface Locks {
 	acquire(input: { key: string; owner: string; ttlMs?: number }): Promise<Lock | undefined>;
 	get(key: string): Promise<Lock | undefined>;
 	release(input: { key: string; owner: string }): Promise<void>;
+	clear?(input?: { prefix?: string }): Promise<number>;
 }
 
 export type SchedulerStore = Store & {

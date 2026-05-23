@@ -48,6 +48,29 @@ test("sqlite locks can acquire after ttl expiry", async () => {
 	}
 });
 
+test("sqlite locks can clear by prefix", async () => {
+	const db = await tempDb();
+	try {
+		const store = sqliteStore({ path: db.path });
+		await store.setup();
+		assert.ok(store.locks);
+
+		await store.locks.acquire({ key: "thread:a", owner: "one" });
+		await store.locks.acquire({ key: "job:a", owner: "two" });
+		assert.equal(await store.locks.clear?.({ prefix: "thread:" }), 1);
+		assert.equal(await store.locks.get("thread:a"), undefined);
+		assert.equal((await store.locks.get("job:a"))?.owner, "two");
+
+		await store.locks.acquire({ key: "thread_%:a", owner: "three" });
+		await store.locks.acquire({ key: "thread_x:a", owner: "four" });
+		assert.equal(await store.locks.clear?.({ prefix: "thread_%:" }), 1);
+		assert.equal(await store.locks.get("thread_%:a"), undefined);
+		assert.equal((await store.locks.get("thread_x:a"))?.owner, "four");
+	} finally {
+		await db.cleanup();
+	}
+});
+
 test("handler returns private busy reply when a thread lock is held", async () => {
 	const db = await tempDb();
 	try {
@@ -172,6 +195,137 @@ test("handler returns private thread status", async () => {
 		assert.match(out?.text ?? "", /Active:/);
 		assert.match(out?.text ?? "", /Pending approvals:/);
 		assert.match(out?.text ?? "", /npm test/);
+	} finally {
+		await db.cleanup();
+	}
+});
+
+test("thread status explains an active turn without claiming nothing needs action", async () => {
+	const db = await tempDb();
+	try {
+		const store = sqliteStore({ path: db.path });
+		await store.setup();
+		const thread = await store.threads.getOrCreate({
+			agent: "a",
+			provider: "slack",
+			channel: "C1",
+			actor: "U1",
+			key: "C1:T1",
+		});
+		const message = await store.messages.create({
+			threadId: thread.id,
+			provider: "slack",
+			role: "user",
+			actor: "U1",
+			text: "deploy",
+		});
+		await store.turns.create({
+			threadId: thread.id,
+			inputMessageId: message.id,
+			agent: "a",
+			provider: "slack",
+			channel: "C1",
+			actor: "U1",
+			trace: "trace-1",
+		});
+
+		const handler = createHandler({
+			agentId: "a",
+			store,
+			callRunner: new CallRunner(store.calls, store.approvals, new Queue({}), {
+				name: "host-bash",
+				root: ".",
+				capabilities: {},
+			}),
+			agent: {
+				ask: async () => ({ text: "should not run" }),
+				continue: async () => ({ text: "should not run" }),
+			},
+		});
+
+		const out = await handler({
+			trace: "trace-status",
+			provider: "slack",
+			eventId: "event-status",
+			channel: "C1",
+			actor: "U1",
+			thread: "C1:T1",
+			text: "status",
+		});
+
+		assert.match(out?.text ?? "", /Active: `running`/);
+		assert.match(out?.text ?? "", /Current activity:/);
+		assert.doesNotMatch(out?.text ?? "", /Nothing needs action/);
+	} finally {
+		await db.cleanup();
+	}
+});
+
+test("thread status does not list stale blocked calls as needing attention", async () => {
+	const db = await tempDb();
+	try {
+		const store = sqliteStore({ path: db.path });
+		await store.setup();
+		const thread = await store.threads.getOrCreate({
+			agent: "a",
+			provider: "slack",
+			channel: "C1",
+			actor: "U1",
+			key: "C1:T1",
+		});
+		const message = await store.messages.create({
+			threadId: thread.id,
+			provider: "slack",
+			role: "user",
+			actor: "U1",
+			text: "deploy",
+		});
+		const turn = await store.turns.create({
+			threadId: thread.id,
+			inputMessageId: message.id,
+			agent: "a",
+			provider: "slack",
+			channel: "C1",
+			actor: "U1",
+			trace: "trace-1",
+		});
+		await store.calls.create({
+			turnId: turn.id,
+			threadId: thread.id,
+			messageId: message.id,
+			channel: "C1",
+			actor: "U1",
+			tool: "host_exec",
+			state: "blocked",
+		});
+		await store.turns.finish(turn.id, { state: "done" });
+
+		const handler = createHandler({
+			agentId: "a",
+			store,
+			callRunner: new CallRunner(store.calls, store.approvals, new Queue({}), {
+				name: "host-bash",
+				root: ".",
+				capabilities: {},
+			}),
+			agent: {
+				ask: async () => ({ text: "should not run" }),
+				continue: async () => ({ text: "should not run" }),
+			},
+		});
+
+		const out = await handler({
+			trace: "trace-status",
+			provider: "slack",
+			eventId: "event-status",
+			channel: "C1",
+			actor: "U1",
+			thread: "C1:T1",
+			text: "status",
+		});
+
+		assert.doesNotMatch(out?.text ?? "", /Calls needing attention/);
+		assert.match(out?.text ?? "", /Nothing needs action/);
 	} finally {
 		await db.cleanup();
 	}

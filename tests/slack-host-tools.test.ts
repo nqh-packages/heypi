@@ -103,6 +103,40 @@ test("host context summarizes configured hosts for the prompt", async () => {
 	}
 });
 
+test("host context includes cached facts", async () => {
+	const root = await tempRoot();
+	try {
+		const store = new HostStore(root.path);
+		const host = await store.upsert({
+			id: "db-1",
+			address: "203.0.113.20",
+			user: "deploy",
+			tags: ["db", "prod"],
+		});
+		await store.setFacts(host.id, {
+			hostname: "db-1",
+			os: "Linux",
+			arch: "x86_64",
+			kernel: "6.8.0",
+			distro: "ubuntu",
+			pkgManager: "apt",
+			serviceManager: "systemd",
+			containerRuntime: "docker",
+			hasSudo: true,
+		});
+
+		const context = createHostContext({ root: root.path });
+		const out = await context({ channel: "slack:T1:C1", actor: "U1", threadId: "thread-1" });
+
+		assert.equal(
+			typeof out === "object" && out ? out.text : "",
+			"- db-1 deploy@203.0.113.20:22 tags=db,prod facts=hostname=db-1, os=Linux, arch=x86_64, kernel=6.8.0, distro=ubuntu, pkg=apt, service=systemd, container=docker, sudo=yes",
+		);
+	} finally {
+		await root.cleanup();
+	}
+});
+
 function requiredTool(tools: ToolDefinition[], name: string): ToolDefinition {
 	const match = tools.find((tool) => tool.name === name);
 	if (!match) throw new Error(`missing tool: ${name}`);

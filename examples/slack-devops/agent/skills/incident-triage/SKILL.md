@@ -28,7 +28,7 @@ Use this skill when the user reports a host issue, service outage, degraded serv
 
 3. Execute safe diagnostics first
 - Use `bash` for read-only checks against the configured workspace (`ls`, `cat`, `grep`, `find`, log inspection).
-- Use `host_exec` for read-only remote checks such as `hostname`, `uptime`, `df -h`, `free -m`, `systemctl status`, and log inspection.
+- Use `host_exec` for read-only remote checks such as `hostname`, `uptime`, `df -h`, `free -m`, `systemctl status`, and log inspection. Include a concise purpose for each remote command.
 - Keep commands scoped and auditable.
 
 4. Propose minimal remediation

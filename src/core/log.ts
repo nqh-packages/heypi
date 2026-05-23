@@ -27,9 +27,8 @@ export function consoleLogger(input: { level?: Level; format?: Format } = {}): L
 	};
 }
 
-export function userError(kind: "handler" | "model"): string {
-	if (kind === "model") return "The model call failed. Check the heypi server logs.";
-	return "The request failed. Check the heypi server logs.";
+export function userError(_kind: "handler" | "model"): string {
+	return "Something went wrong. Ask an admin to check the server logs.";
 }
 
 export function logError(log: Logger, kind: "handler" | "model", input: Record<string, unknown>): void {

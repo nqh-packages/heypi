@@ -1,4 +1,4 @@
-import { and, eq, lte } from "drizzle-orm";
+import { and, eq, lte, sql } from "drizzle-orm";
 import { lock } from "../db/schema.js";
 import type { Db } from "./db.js";
 import type { Lock } from "./types.js";
@@ -30,6 +30,16 @@ export class LockRepo {
 		await this.db.delete(lock).where(and(eq(lock.key, input.key), eq(lock.owner, input.owner)));
 	}
 
+	async clear(input: { prefix?: string } = {}): Promise<number> {
+		const rows = input.prefix
+			? await this.db
+					.delete(lock)
+					.where(sql`${lock.key} LIKE ${`${escapeLike(input.prefix)}%`} ESCAPE '\\'`)
+					.returning({ key: lock.key })
+			: await this.db.delete(lock).returning({ key: lock.key });
+		return rows.length;
+	}
+
 	async get(key: string): Promise<Lock | undefined> {
 		const rows = await this.db.select().from(lock).where(eq(lock.key, key)).limit(1);
 		return rows[0];
@@ -39,4 +49,8 @@ export class LockRepo {
 		const row = await this.get(key);
 		return row?.owner === owner ? row : undefined;
 	}
+}
+
+function escapeLike(input: string): string {
+	return input.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
 }

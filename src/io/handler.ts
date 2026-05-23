@@ -26,6 +26,8 @@ export type Inbound = {
 	data?: unknown;
 	scheduled?: boolean;
 	stream?: ReplyStream;
+	ack?: (out: Outbound) => Promise<void>;
+	replace?: (out: Outbound) => Promise<void>;
 };
 
 export type Outbound = {
@@ -88,6 +90,7 @@ export function createHandler(input: {
 	agent: Agent;
 	approval?: ApprovalConfig;
 	active?: ActiveRuns;
+	lockMs?: number;
 	logger?: Logger;
 }): Handler {
 	const agentId = input.agentId ?? "default";
@@ -134,7 +137,7 @@ export function createHandler(input: {
 			const [turns, calls, approvals, currentLock] = await Promise.all([
 				input.store.turns.listForThread(thread.id, { limit: 5 }),
 				input.store.calls.listForThread(thread.id, {
-					states: ["running", "pending_approval", "blocked", "failed", "cancelled"],
+					states: ["running", "pending_approval"],
 					limit: 5,
 				}),
 				input.store.approvals.listPending({ threadId: thread.id, limit: 5 }),
@@ -149,7 +152,9 @@ export function createHandler(input: {
 			});
 		}
 		const shouldLock = requiresThreadLock(intent.kind) && input.store.locks !== undefined;
-		const lock = shouldLock ? await input.store.locks?.acquire({ key: lockKey, owner: lockOwner }) : undefined;
+		const lock = shouldLock
+			? await input.store.locks?.acquire({ key: lockKey, owner: lockOwner, ttlMs: input.lockMs })
+			: undefined;
 		if (shouldLock && !lock) {
 			log.debug("handler.locked", {
 				trace,
@@ -241,10 +246,17 @@ export function createHandler(input: {
 								trace,
 								text: messageText,
 								model: msg.model,
+								attachments: msg.attachments,
 								signal: currentRun.signal,
 								stream,
 							})
-						: await input.callRunner.handle(scopedIntent(intent as CallIntent, msg), base, currentRun.signal);
+						: await input.callRunner.handle(
+								scopedIntent(intent as CallIntent, msg),
+								base,
+								currentRun.signal,
+								intent.kind === "approve" ? msg.ack : undefined,
+								intent.kind === "approve" ? msg.replace : undefined,
+							);
 			if (currentRun.signal.aborted) reply = { text: "cancelled" };
 			const targetThreadId = reply.continuation?.threadId;
 			if (reply.continuation) {

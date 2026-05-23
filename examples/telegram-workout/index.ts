@@ -2,7 +2,16 @@ import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { loadEnvFile } from "node:process";
-import { agentFrom, consoleLogger, createHeypi, sqliteStore, telegram, tool, workspace } from "@hunvreus/heypi";
+import {
+	agentFrom,
+	consoleLogger,
+	coreTools,
+	createHeypi,
+	sqliteStore,
+	telegram,
+	tool,
+	workspace,
+} from "@hunvreus/heypi";
 import { Type } from "@sinclair/typebox";
 
 loadEnv("examples/telegram-workout/.env");
@@ -130,7 +139,7 @@ const app = createHeypi({
 	],
 	agent: agentFrom("./examples/telegram-workout/agent", {
 		model: "openai/gpt-5-mini",
-		tools: [getProfile, saveProfile, logWorkout],
+		tools: [...coreTools(), getProfile, saveProfile, logWorkout],
 	}),
 	jobs: [
 		{

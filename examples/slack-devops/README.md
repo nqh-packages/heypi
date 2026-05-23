@@ -1,6 +1,6 @@
 # Slack DevOps
 
-Slack DevOps assistant for configured Linux/VPS hosts. It demonstrates scoped Slack behavior, runbook search, governed local bash, approval-gated remote host tools, SSH public-key onboarding, and file-backed host inventory.
+Slack DevOps assistant for configured Linux/VPS hosts. It demonstrates scoped Slack behavior, runbook search, local runtime tools, approval-gated remote host tools, SSH public-key onboarding, and file-backed host inventory.
 
 This example uses Slack Socket Mode so it can run locally without a public HTTPS URL.
 
@@ -12,7 +12,8 @@ The agent loads:
 - `skills/incident-triage/SKILL.md` for the incident workflow.
 - Markdown runbooks from `runbooks/`, searched through the `runbook_search` custom tool.
 - Dynamic host context from `state/hosts.json`, appended to the prompt each turn so the agent can recognize host ids, tags, and aliases before choosing tools.
-- Custom host tools from `host-tools.ts` for SSH key onboarding, host inventory, and remote SSH execution.
+- Custom host tools from `host-tools.ts` for SSH key onboarding, host inventory, cached host facts, and remote SSH execution.
+- Core runtime tools through `coreTools({ bash: true })`. Local bash is enabled without command confirmation in this example; remote SSH commands are governed by `host_exec`.
 
 Runbooks are plain Markdown files under `agent/runbooks/`, exposed through `runbook-tools.ts`. The skill tells the agent when to use `runbook_search` and how to apply the results.
 
@@ -45,6 +46,7 @@ Leave the `HEYPI_SLACK_*` allowlists empty to accept every event Slack delivers.
 `SLACK_SIGNING_SECRET` is only required for HTTP mode. Socket Mode uses `SLACK_APP_TOKEN`.
 
 This example enables `streaming: true`, so Slack replies are posted as draft messages and edited while Pi emits text. Delivery pacing and rate-limit retries use heypi's defaults.
+Slack still shows the immediate `Thinking...` progress message while work is starting. Top-level channel messages also get an `eyes` reaction; thread replies and approval continuations do not. Approval buttons update their original message immediately after approval or rejection while keeping the approved/rejected command details visible.
 
 Check setup:
 
@@ -77,7 +79,9 @@ First host setup:
 1. Ask the bot to add the host, for example: `Add web-1 at 203.0.113.10 as deploy and tag it web,prod`.
 2. Approve the `hosts_upsert` request if approvals are enabled.
 3. Copy the public key returned by Slack into `~/.ssh/authorized_keys` for that SSH user on the VPS.
-4. Tell the bot the key is installed. It can then test the connection with a safe command.
+4. Tell the bot the key is installed. It can then test the connection and refresh cached facts with safe probes.
+
+If `HEYPI_APPROVERS` is empty, any Slack user who can interact with the bot can approve pending actions. Set `HEYPI_APPROVERS` for a real workspace.
 
 Host tools:
 
@@ -85,9 +89,12 @@ Host tools:
 - `host_key_public`: shows the public key to add to `~/.ssh/authorized_keys` on a VPS.
 - `hosts_list` / `hosts_lookup`: inspect file-backed host inventory.
 - `hosts_upsert` / `hosts_remove`: add, update, or remove hosts. These require approval. `hosts_upsert` also ensures the named key exists and returns the public key to install.
-- `host_exec`: runs commands over SSH from the heypi Node process. Risky commands require approval; blocked commands do not run.
+- `host_facts_refresh`: probes and persists hostname, OS, architecture, kernel, distro, package manager, service manager, container runtime/version, root disk, memory, ports 80/443, git user, and passwordless sudo availability.
+- `host_exec`: runs commands over SSH from the heypi Node process. Each call includes a human purpose. Risky commands require approval through `commandConfirm()`; blocked commands do not run.
 
 `just-bash` remains the local workspace runtime. Remote SSH commands do not run inside `just-bash`; they run through `host_exec`.
+
+The example enables `just-bash` network access so local bash can use `curl` for public documentation lookup. Keep this disabled or use a stricter `network.allowedUrlPrefixes` config if the agent should not reach arbitrary public URLs.
 
 This example is intentionally more involved than the Telegram example: it shows custom tools, tool confirmation, file-backed state, SSH key generation, and a separate remote execution surface next to the local `just-bash` runtime.
 

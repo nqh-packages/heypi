@@ -222,39 +222,84 @@ async function handleInteraction(input: {
 	interaction: Interaction;
 }): Promise<void> {
 	if (!input.interaction.isButton()) return;
-	const action = parseAction(input.interaction.customId);
+	const interaction = input.interaction;
+	const action = parseAction(interaction.customId);
 	if (!action) return;
-	const trace = `discord:${input.interaction.id}`;
-	const channel = input.interaction.channelId ?? "unknown";
-	const team = input.interaction.guildId ?? undefined;
-	const actor = input.interaction.user.id;
-	await input.interaction.deferUpdate();
+	const trace = `discord:${interaction.id}`;
+	const channel = interaction.channelId ?? "unknown";
+	const team = interaction.guildId ?? undefined;
+	const actor = interaction.user.id;
+	let acknowledged = false;
+	const acknowledge = async (text: string) => {
+		await interaction.editReply({
+			content: firstChunk(actionResultText(action.kind, actor, text, action.id)),
+			components: [],
+		});
+		acknowledged = true;
+	};
+	const replace = async (out: Outbound) => {
+		await interaction.editReply({
+			content: firstChunk(out.text),
+			components: [],
+		});
+	};
+	await interaction.deferUpdate();
 	try {
 		const out = await input.start.handler({
 			trace,
 			provider: "discord",
-			eventId: input.interaction.id,
+			eventId: interaction.id,
 			team,
 			channel,
 			actor,
 			thread: channel,
 			text: `${action.kind} ${action.id}`,
-			data: { customId: input.interaction.customId, messageId: input.interaction.message.id },
+			data: { customId: interaction.customId, messageId: interaction.message.id },
+			ack: action.kind === "approve" ? (out) => acknowledge(out.text) : undefined,
+			replace: action.kind === "approve" || action.kind === "deny" ? replace : undefined,
 		});
 		if (!out) return;
-		const target = out.private ? await input.interaction.user.createDM() : input.interaction.channel;
+		const target = out.private ? await interaction.user.createDM() : interaction.channel;
 		if (!target) return;
+		if (acknowledged) {
+			await sendDiscordOutput({
+				channel: target,
+				store: input.start.attachments,
+				out,
+				logger: input.start.logger,
+				context: { trace, adapter: "discord", channel },
+				delivery: input.delivery,
+			});
+			return;
+		}
+		const rendered = out.private ? out : { ...out, text: actionResultText(action.kind, actor, out.text, action.id) };
+		if (!out.private) {
+			await interaction.editReply({
+				content: firstChunk(rendered.text),
+				components: rendered.approval ? approvalComponents(rendered.approval) : [],
+			});
+			await sendDiscordOutput({
+				channel: target,
+				store: input.start.attachments,
+				out: rendered,
+				skipFirst: true,
+				logger: input.start.logger,
+				context: { trace, adapter: "discord", channel },
+				delivery: input.delivery,
+			});
+			return;
+		}
 		await sendDiscordOutput({
 			channel: target,
 			store: input.start.attachments,
-			out,
+			out: rendered,
 			logger: input.start.logger,
 			context: { trace, adapter: "discord", channel },
 			delivery: input.delivery,
 		});
 	} catch (error) {
 		input.start.logger.error("adapter.error", { trace, adapter: "discord", channel, error: errorMessage(error) });
-		await input.interaction.followUp({ content: userError("handler"), ephemeral: true }).catch(() => undefined);
+		await interaction.followUp({ content: userError("handler"), ephemeral: true }).catch(() => undefined);
 	}
 }
 
@@ -399,8 +444,10 @@ function startProgress(input: {
 		async stop(): Promise<void> {
 			if (timer) clearTimeout(timer);
 			if (!id) return;
+			const messageId = id;
+			id = undefined;
 			try {
-				const msg = await input.message.channel.messages.fetch(id);
+				const msg = await input.message.channel.messages.fetch(messageId);
 				await input.delivery.run(() => msg.delete(), input.context);
 			} catch {
 				// Progress deletion is best effort.
@@ -513,6 +560,21 @@ function parseAction(input: string): { kind: "approve" | "deny"; id: string } | 
 	if (kind === APPROVE && id) return { kind: "approve", id };
 	if (kind === DENY && id) return { kind: "deny", id };
 	return undefined;
+}
+
+function actionResultText(kind: "approve" | "deny", actor: string, text: string, id?: string): string {
+	if (kind === "approve") {
+		const prefix = id ? `✅ Approval \`${id}\` approved by <@${actor}>.` : `✅ Approved by <@${actor}>.`;
+		return [prefix, text].filter(Boolean).join("\n\n");
+	}
+	const callId = rejectedCallId(text);
+	if (callId) return `⛔ Action \`${callId}\` rejected by <@${actor}>.`;
+	const prefix = id ? `⛔ Approval \`${id}\` rejected by <@${actor}>.` : `⛔ Rejected by <@${actor}>.`;
+	return [prefix, text].filter(Boolean).join("\n\n");
+}
+
+function rejectedCallId(text: string): string | undefined {
+	return /^Action `([^`]+)` rejected\./.exec(text.trim())?.[1];
 }
 
 function firstChunk(text: string): string {

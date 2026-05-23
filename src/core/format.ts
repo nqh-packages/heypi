@@ -16,7 +16,7 @@ export type ApprovalSummary = {
 export function helpReply(): Reply {
 	return {
 		text: [
-			"heypi commands:",
+			"Commands:",
 			"- bash <shell command>",
 			"- approvals: list pending approvals",
 			"- approve <approval-id>",
@@ -24,7 +24,7 @@ export function helpReply(): Reply {
 			"- cancel <turn-id>",
 			"- status: show this thread status",
 			"- status <call-id>: show one call status",
-			"- any other text: handled by Pi agent with bash",
+			"- any other text: handled by the assistant",
 		].join("\n"),
 	};
 }
@@ -67,7 +67,12 @@ export function renderThreadStatus(input: {
 	lock?: { owner: string; expiresAt: number };
 }): Reply {
 	const lines = ["Thread status"];
-	lines.push(input.active ? `Active: \`${input.active.state}\`` : "Active: none");
+	const busyMs = input.lock ? Math.max(0, input.lock.expiresAt - Date.now()) : 0;
+	lines.push(
+		input.active
+			? `Active: \`${input.active.state}\` for ${formatDuration(Date.now() - input.active.updatedAt)}`
+			: "Active: none",
+	);
 	if (input.approvals.length) {
 		lines.push("", "Pending approvals:");
 		for (const row of input.approvals) {
@@ -80,8 +85,12 @@ export function renderThreadStatus(input: {
 		for (const row of input.calls)
 			lines.push(`- \`${row.tool}\` — ${row.state}${row.command ? ` — \`${redact(row.command)}\`` : ""}`);
 	}
-	if (input.lock) lines.push("", `Thread is busy for another ${Math.max(0, input.lock.expiresAt - Date.now())}ms.`);
-	if (!input.approvals.length && !input.calls.length) lines.push("", "Nothing needs action.");
+	if (input.lock) lines.push("", `Busy for up to ${formatDuration(busyMs)}.`);
+	if (input.active && !input.approvals.length && !input.calls.length) {
+		lines.push("", "Current activity: waiting for model or tool output.");
+	} else if (!input.active && !input.lock && !input.approvals.length && !input.calls.length) {
+		lines.push("", "Nothing needs action.");
+	}
 	return { text: lines.join("\n"), private: true };
 }
 
@@ -97,17 +106,21 @@ export function renderCall(input: {
 	command?: string;
 	runtime?: string;
 	approvers?: string[];
+	instructions?: boolean;
 }): Reply {
 	if (input.state === "pending_approval") {
 		const command = input.command ? redact(input.command) : undefined;
+		const tool = input.runtime === "tool" && command ? toolCall(command) : undefined;
 		const showCommand = command && input.runtime !== "tool";
+		const reason = input.reason ? redact(input.reason) : "Policy requires approval.";
 		return {
 			text: [
 				"*Approval required*",
-				input.reason ?? "Policy requires approval.",
+				reason,
+				...(tool ? toolLines(tool) : []),
 				showCommand ? ["", "Command:", codeBlock(command)].join("\n") : undefined,
 				input.approvers?.length ? `Approvers: ${input.approvers.join(", ")}` : undefined,
-				"Use the buttons below to continue.",
+				input.instructions === false ? undefined : "Use the buttons below to continue.",
 			]
 				.filter((line): line is string => typeof line === "string")
 				.join("\n"),
@@ -138,7 +151,7 @@ export function renderCall(input: {
 		return {
 			text:
 				input.reason === "denied"
-					? "Action rejected."
+					? `Action \`${input.callId}\` rejected.`
 					: ["Action blocked", input.reason ?? "Policy blocked this action."].join("\n"),
 		};
 	}
@@ -157,6 +170,49 @@ export function renderCall(input: {
 
 function codeBlock(value: string): string {
 	return ["```", value, "```"].join("\n");
+}
+
+function toolCall(value: string): { name: string; args: Record<string, unknown> } | undefined {
+	const index = value.indexOf(" ");
+	if (index <= 0) return { name: value, args: {} };
+	const name = value.slice(0, index);
+	const raw = value.slice(index + 1).trim();
+	if (!raw) return { name, args: {} };
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		return {
+			name,
+			args:
+				parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {},
+		};
+	} catch {
+		return { name, args: { input: raw } };
+	}
+}
+
+function toolLines(input: { name: string; args: Record<string, unknown> }): string[] {
+	const lines = [""];
+	const target = toolTarget(input.args);
+	if (target) lines.push(`Target: ${target}`);
+	if (typeof input.args.command === "string") lines.push("Command:", codeBlock(input.args.command));
+	const rest = Object.fromEntries(
+		Object.entries(input.args).filter(
+			([key]) => key !== "command" && key !== "host" && key !== "hosts" && key !== "purpose",
+		),
+	);
+	if (Object.keys(rest).length > 0) lines.push("Input:", codeBlock(JSON.stringify(rest, null, 2)));
+	return lines;
+}
+
+function toolTarget(args: Record<string, unknown>): string | undefined {
+	if (typeof args.host === "string") return `\`${args.host}\``;
+	if (Array.isArray(args.hosts) && args.hosts.length > 0) {
+		return args.hosts
+			.filter((item): item is string => typeof item === "string")
+			.map((item) => `\`${item}\``)
+			.join(", ");
+	}
+	return undefined;
 }
 
 function formatDuration(ms: number): string {

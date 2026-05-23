@@ -1,8 +1,9 @@
 import type { HeypiConfig } from "./config.js";
 import { ActiveRuns } from "./core/active.js";
 import { CallRunner } from "./core/calls.js";
-import { logger } from "./core/log.js";
+import { type Logger, logger, message } from "./core/log.js";
 import { createScheduler } from "./core/scheduler.js";
+import { splitTools } from "./core-tools.js";
 import { runtimeAttachments } from "./io/attachments.js";
 import { createHandler, createStatus } from "./io/handler.js";
 import { createRuntime } from "./runtime/index.js";
@@ -29,6 +30,8 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 		maxConcurrent: config.runtime.maxConcurrent ?? 12,
 		maxPerChat: config.runtime.maxConcurrentPerChat ?? 1,
 	});
+	const agentTools = splitTools(config.agent.tools);
+	const bashConfirm = agentTools.core.find((tool) => tool.name === "bash")?.confirm;
 	const callRunner = new CallRunner(
 		config.store.calls,
 		config.store.approvals,
@@ -37,9 +40,9 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 		config.approval,
 		log,
 		config.store.transaction,
-		config.approval?.commands,
+		bashConfirm,
 	);
-	for (const tool of config.agent.tools ?? []) {
+	for (const tool of agentTools.custom) {
 		const execute = toolRunner(tool);
 		if (execute) callRunner.register(tool.name, execute);
 	}
@@ -49,6 +52,7 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 		runtime,
 		messages: config.store.messages,
 		sessions: config.store.sessions,
+		attachments: config.attachments?.process,
 		logger: log,
 	});
 	const handler = createHandler({
@@ -58,6 +62,7 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 		agent,
 		approval: config.approval,
 		active,
+		lockMs: config.runtime.timeoutMs,
 		logger: log,
 	});
 	const status = createStatus({ agentId: config.agent.id, store: config.store });
@@ -75,6 +80,7 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 	let ready: Promise<void> | undefined;
 	async function start(): Promise<void> {
 		await config.store.setup();
+		await recoverStartup({ agent: config.agent.id, store: config.store, logger: log });
 		log.info("app.start", {
 			agent: config.agent.id,
 			runtime: runtime.name,
@@ -114,4 +120,32 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 			ready = undefined;
 		},
 	};
+}
+
+async function recoverStartup(input: Pick<HeypiConfig, "store"> & { agent: string; logger: Logger }): Promise<void> {
+	const turns = await input.store.turns.listRunning?.({ agent: input.agent, limit: 500 });
+	if (turns?.length) {
+		for (const turn of turns) {
+			try {
+				const result = await input.store.messages.create({
+					threadId: turn.threadId,
+					provider: turn.provider,
+					role: "system",
+					actor: "heypi",
+					text: "Process restarted while this turn was running.",
+					state: "failed",
+				});
+				await input.store.turns.finish(turn.id, { state: "failed", resultMessageId: result.id });
+			} catch (error) {
+				input.logger.warn("app.recovery_turn_failed", {
+					agent: input.agent,
+					turn: turn.id,
+					error: message(error),
+				});
+			}
+		}
+		input.logger.warn("app.recovered_turns", { agent: input.agent, turns: turns.length });
+	}
+	const locks = await input.store.locks?.clear?.({ prefix: "thread:" });
+	if (locks) input.logger.warn("app.recovered_locks", { agent: input.agent, locks });
 }

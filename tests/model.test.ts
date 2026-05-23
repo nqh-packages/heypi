@@ -4,12 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CallRunner } from "../src/core/calls.js";
+import { commandConfirm } from "../src/core/policy.js";
 import { createHandler, createStatus } from "../src/io/handler.js";
 import type { ReplyStream } from "../src/io/reply-stream.js";
 import type { AgentReq } from "../src/runtime/agent.js";
-import { streamTextDelta } from "../src/runtime/pi-agent.js";
+import { applyModelPayloadConfig, promptReplayHistory, streamTextDelta } from "../src/runtime/pi-agent.js";
 import { Queue } from "../src/runtime/queue.js";
 import { sqliteStore } from "../src/store/sqlite.js";
+import type { StoredMessage } from "../src/store/types.js";
 
 async function tempDb(): Promise<{ path: string; cleanup: () => Promise<void> }> {
 	const dir = await mkdtemp(join(tmpdir(), "heypi-model-"));
@@ -19,6 +21,55 @@ async function tempDb(): Promise<{ path: string; cleanup: () => Promise<void> }>
 function secret(value: string): string {
 	return `sk-${value}`;
 }
+
+test("prompt replay flattens persisted tool protocol history", () => {
+	const history = [
+		{
+			role: "assistant",
+			content: [
+				{ type: "text", text: "I'll check." },
+				{ type: "toolCall", id: "call_1|fc_1", name: "host_exec", arguments: { command: "uptime" } },
+			],
+			api: "openai-responses",
+			provider: "openai",
+			model: "gpt-test",
+			usage: {},
+			stopReason: "toolUse",
+			timestamp: 1,
+		},
+		{
+			role: "toolResult",
+			toolCallId: "call_1|fc_1",
+			toolName: "host_exec",
+			content: [{ type: "text", text: "up 1 day" }],
+			isError: false,
+			timestamp: 2,
+		},
+	] as StoredMessage[];
+
+	const replay = promptReplayHistory(history);
+
+	assert.equal(replay.length, 2);
+	assert.deepEqual((replay[0] as { content: unknown } | undefined)?.content, [{ type: "text", text: "I'll check." }]);
+	assert.equal(replay[1]?.role, "user");
+	assert.equal((replay[1] as { content: unknown } | undefined)?.content, "[host_exec result]\nup 1 day");
+	assert.equal(JSON.stringify(replay).includes("toolCall"), false);
+	assert.equal(JSON.stringify(replay).includes("toolResult"), false);
+});
+
+test("model payload config applies response verbosity", () => {
+	assert.deepEqual(
+		applyModelPayloadConfig(
+			{ model: "gpt-5-mini", input: [], text: { format: { type: "text" } } },
+			{
+				provider: "openai",
+				name: "gpt-5-mini",
+				verbosity: "low",
+			},
+		),
+		{ model: "gpt-5-mini", input: [], text: { format: { type: "text" }, verbosity: "low" } },
+	);
+});
 
 test("handler passes per-turn model override to agent", async () => {
 	const db = await tempDb();
@@ -55,6 +106,48 @@ test("handler passes per-turn model override to agent", async () => {
 		});
 
 		assert.deepEqual(request?.model, { provider: "openai", name: "gpt-5.5" });
+	} finally {
+		await db.cleanup();
+	}
+});
+
+test("handler passes inbound attachments to agent", async () => {
+	const db = await tempDb();
+	try {
+		const store = sqliteStore({ path: db.path });
+		await store.setup();
+		let request: AgentReq | undefined;
+		const handler = createHandler({
+			agentId: "a",
+			store,
+			callRunner: new CallRunner(store.calls, store.approvals, new Queue({}), {
+				name: "host-bash",
+				root: ".",
+				capabilities: {},
+			}),
+			agent: {
+				ask: async (req) => {
+					request = req;
+					return { text: "ok" };
+				},
+				continue: async () => ({ text: "ok" }),
+			},
+		});
+
+		await handler({
+			trace: "trace-attachments",
+			provider: "test",
+			eventId: "event-attachments",
+			channel: "C1",
+			actor: "U1",
+			thread: "T1",
+			text: "review",
+			attachments: [{ name: "image.png", path: "/incoming/image.png", mimeType: "image/png", size: 5 }],
+		});
+
+		assert.deepEqual(request?.attachments, [
+			{ name: "image.png", path: "/incoming/image.png", mimeType: "image/png", size: 5 },
+		]);
 	} finally {
 		await db.cleanup();
 	}
@@ -156,6 +249,7 @@ test("handler scopes approvals by provider team and channel", async () => {
 				{ approvers: ["U_ALLOWED"] },
 				undefined,
 				store.transaction,
+				commandConfirm(),
 			),
 			agent: {
 				ask: async () => ({ text: "ok" }),
@@ -229,6 +323,7 @@ test("approvals command lists pending approvals for approvers only", async () =>
 				approval,
 				undefined,
 				store.transaction,
+				commandConfirm(),
 			),
 			agent: {
 				ask: async () => ({ text: "ok" }),
@@ -274,7 +369,7 @@ test("approvals command lists pending approvals for approvers only", async () =>
 		});
 		assert.equal(listed?.private, true);
 		assert.match(listed?.text ?? "", new RegExp(approvalId));
-		assert.match(listed?.text ?? "", /curl/);
+		assert.match(listed?.text ?? "", /Run bash command/);
 	} finally {
 		await db.cleanup();
 	}

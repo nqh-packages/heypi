@@ -22,7 +22,7 @@ If a user names a host that is not configured, ask for the missing host fields b
 2. Use `hosts_upsert` to save the host. This requires approval.
 3. After approval, `hosts_upsert` returns the public key to install.
 4. Tell the user to append that public key to `~/.ssh/authorized_keys` for the configured SSH user.
-5. After the user confirms the key was installed, test with a safe command through `host_exec`, such as `hostname && uptime`.
+5. After the user confirms the key was installed, test the connection and refresh cached host facts.
 
 ## Rules
 

@@ -3,6 +3,7 @@ import { Type } from "@sinclair/typebox";
 import type { CallContext } from "../core/calls.js";
 import { type Logger, logger } from "../core/log.js";
 import type { Confirm, Reply, ToolExecute } from "../core/types.js";
+import { type CoreToolDefinition, type CoreToolName, coreTools } from "../core-tools.js";
 import type { Messages } from "../store/types.js";
 import { toolConfirm, toolRunner } from "../tool-internal.js";
 import { booleanParam, numberParam, optionalString, stringParam, text, toolText } from "./tool-util.js";
@@ -31,6 +32,7 @@ export function tools(input: {
 	channel: string;
 	actor: string;
 	context?: CallContext;
+	core?: CoreToolDefinition[];
 	custom?: ToolDefinition[];
 	logger?: Logger;
 }): ToolDefinition[] {
@@ -42,6 +44,7 @@ export function tools(input: {
 		input.channel,
 		input.actor,
 		input.context,
+		input.core,
 	);
 	const merged = new Map(base.map((tool) => [tool.name, tool]));
 	for (const tool of input.custom ?? []) {
@@ -66,7 +69,7 @@ function wrapTool(
 		log.warn("tool.confirm_rejected", { tool: tool.name, reason: "missing heypi replay runner" });
 		return {
 			...tool,
-			execute: async () => text(`tool=${tool.name} requires confirmation but was not created with heypi tool()`),
+			execute: async () => text(`tool=${tool.name} requires confirmation but cannot be replayed after approval`),
 		};
 	}
 	return {
@@ -98,13 +101,15 @@ function runtimeTools(
 	channel: string,
 	actor: string,
 	context?: CallContext,
+	coreTools?: CoreToolDefinition[],
 ): ToolDefinition[] {
 	const out: ToolDefinition[] = [];
-	if (messages && context?.thread) {
+	const core = coreMap(coreTools);
+	if (enabled(core, "history") && messages && context?.thread) {
 		out.push({
 			name: "history",
 			label: "History",
-			description: "Search older messages in the current heypi thread when recent context is not enough.",
+			description: "Search older messages in the current conversation when recent context is not enough.",
 			parameters: Type.Object({
 				query: Type.Optional(Type.String()),
 				limit: Type.Optional(Type.Number()),
@@ -131,11 +136,12 @@ function runtimeTools(
 			},
 		});
 	}
-	if (runtime.capabilities.bash && runtime.bash) {
+	if (enabled(core, "bash") && runtime.capabilities.bash && runtime.bash) {
 		out.push({
 			name: "bash",
 			label: "Bash",
-			description: "Execute a bash command through heypi policy, approval, audit, and runtime controls.",
+			description:
+				"Execute a bash command in the runtime workspace. Returns stdout and stderr. Output may be truncated. Some commands may require approval or be blocked by policy.",
 			parameters: Type.Object({ command: Type.String({ minLength: 1 }) }),
 			execute: async (toolCallId, params, signal) => {
 				const command = stringParam(params, "command");
@@ -144,12 +150,13 @@ function runtimeTools(
 			},
 		});
 	}
-	if (runtime.capabilities.read && runtime.read) {
+	if (enabled(core, "read") && runtime.capabilities.read && runtime.read) {
 		const read = runtime.read;
 		out.push({
 			name: "read",
 			label: "Read",
-			description: "Read a file from the runtime workspace.",
+			description:
+				"Read the contents of a file in the runtime workspace. Supports offset and limit for large files.",
 			parameters: Type.Object({
 				path: Type.String({ minLength: 1 }),
 				offset: Type.Optional(Type.Number()),
@@ -166,12 +173,12 @@ function runtimeTools(
 			},
 		});
 	}
-	if (runtime.capabilities.write && runtime.write) {
+	if (enabled(core, "write") && runtime.capabilities.write && runtime.write) {
 		const write = runtime.write;
 		out.push({
 			name: "write",
 			label: "Write",
-			description: "Write a file in the runtime workspace.",
+			description: "Write a file in the runtime workspace, creating it if needed.",
 			parameters: Type.Object({ path: Type.String({ minLength: 1 }), content: Type.String() }),
 			execute: async (_id, params) => {
 				const result = await write({
@@ -182,12 +189,12 @@ function runtimeTools(
 			},
 		});
 	}
-	if (runtime.capabilities.edit && runtime.edit) {
+	if (enabled(core, "edit") && runtime.capabilities.edit && runtime.edit) {
 		const edit = runtime.edit;
 		out.push({
 			name: "edit",
 			label: "Edit",
-			description: "Edit a file by exact text replacement in the runtime workspace.",
+			description: "Edit a file in the runtime workspace by exact text replacement.",
 			parameters: Type.Object({
 				path: Type.String({ minLength: 1 }),
 				oldText: Type.String({ minLength: 1 }),
@@ -205,7 +212,7 @@ function runtimeTools(
 			},
 		});
 	}
-	if (runtime.capabilities.grep && runtime.grep) {
+	if (enabled(core, "grep") && runtime.capabilities.grep && runtime.grep) {
 		const grep = runtime.grep;
 		out.push({
 			name: "grep",
@@ -229,12 +236,12 @@ function runtimeTools(
 			},
 		});
 	}
-	if (runtime.capabilities.find && runtime.find) {
+	if (enabled(core, "find") && runtime.capabilities.find && runtime.find) {
 		const find = runtime.find;
 		out.push({
 			name: "find",
 			label: "Find",
-			description: "Find files in the runtime workspace.",
+			description: "Find files in the runtime workspace by path or glob-like pattern.",
 			parameters: Type.Object({
 				pattern: Type.Optional(Type.String()),
 				path: Type.Optional(Type.String()),
@@ -251,12 +258,12 @@ function runtimeTools(
 			},
 		});
 	}
-	if (runtime.capabilities.ls && runtime.ls) {
+	if (enabled(core, "ls") && runtime.capabilities.ls && runtime.ls) {
 		const ls = runtime.ls;
 		out.push({
 			name: "ls",
 			label: "List",
-			description: "List files in the runtime workspace.",
+			description: "List files and directories in the runtime workspace.",
 			parameters: Type.Object({ path: Type.Optional(Type.String()) }),
 			execute: async (_id, params, signal) => {
 				const result = await ls({ path: optionalString(params, "path"), signal });
@@ -265,4 +272,12 @@ function runtimeTools(
 		});
 	}
 	return out;
+}
+
+function coreMap(input: CoreToolDefinition[] | undefined): Map<CoreToolName, CoreToolDefinition> {
+	return new Map((input ?? coreTools()).map((tool) => [tool.name, tool]));
+}
+
+function enabled(core: Map<CoreToolName, CoreToolDefinition>, name: CoreToolName): boolean {
+	return core.has(name);
 }

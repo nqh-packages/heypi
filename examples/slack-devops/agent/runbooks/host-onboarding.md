@@ -17,7 +17,7 @@ Use this runbook when a user wants to add a VPS or Linux host to the Slack DevOp
 2. If the user provides host details, use `hosts_upsert`.
 3. After approval, `hosts_upsert` returns the public key to install.
 4. Tell the user to append that public key to `~/.ssh/authorized_keys` for the configured SSH user.
-5. When the user confirms the key is installed, test with `host_exec` using `hostname && uptime`.
+5. When the user confirms the key is installed, test the connection and refresh cached host facts.
 
 ## Boundaries
 

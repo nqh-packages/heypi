@@ -35,8 +35,8 @@ export class ActiveRuns {
 }
 
 export function cancelReply(result: CancelResult): { text: string; private: true } {
-	if (result === "cancelled") return { text: "cancelled", private: true };
-	return { text: "not found or already completed", private: true };
+	if (result === "cancelled") return { text: "Cancelled.", private: true };
+	return { text: "No active run found for that id.", private: true };
 }
 
 export function isAbortError(error: unknown): boolean {

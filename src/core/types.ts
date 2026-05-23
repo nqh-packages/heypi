@@ -48,7 +48,16 @@ export type ApprovalPrompt = {
 	allowed: string[];
 };
 
-export type Confirm = { reason: string } | ((input: Record<string, unknown>) => { reason: string } | false | undefined);
+export type ConfirmResult = {
+	message?: string;
+	reason?: string;
+	policyReason?: string;
+	block?: string;
+};
+
+export type ConfirmFunction = (input: Record<string, unknown>) => ConfirmResult | false | undefined;
+
+export type Confirm = ConfirmResult | ConfirmFunction;
 
 export type ToolExecute = (
 	args: Record<string, unknown>,

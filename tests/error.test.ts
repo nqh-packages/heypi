@@ -18,8 +18,8 @@ test("redact removes provider secrets from logged errors", () => {
 });
 
 test("user errors are generic", () => {
-	assert.equal(userError("model"), "The model call failed. Check the heypi server logs.");
-	assert.equal(userError("handler"), "The request failed. Check the heypi server logs.");
+	assert.equal(userError("model"), "Something went wrong. Ask an admin to check the server logs.");
+	assert.equal(userError("handler"), "Something went wrong. Ask an admin to check the server logs.");
 });
 
 test("pretty logger writes single-line redacted fields", () => {

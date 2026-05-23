@@ -100,7 +100,7 @@ Pi tool call
   -> optional Pi continuation
 ```
 
-`bash` uses command policy. Custom tools can use the exported `tool()` helper to require confirmation and replay after approval. Text commands and provider-native buttons both resolve to the same approval path.
+Core tools and custom tools use the same confirmation path. `coreTools()` registers runtime-backed tools, and `commandConfirm()` adapts command classification into a normal `confirm` function for `bash` or command-shaped custom tools. Custom tools can use the exported `tool()` helper to require confirmation and replay after approval. Text commands and provider-native buttons both resolve to the same approval path. Adapters may acknowledge provider-native approval buttons immediately after authorization succeeds, then deliver the approved call result as a follow-up.
 
 ### Runtime
 
@@ -111,7 +111,7 @@ Pi tool call
 - `guarded-bash`: host bash plus regex guardrails
 - `host-bash`: host bash, unsafe/dev/admin mode
 
-File tools run under the configured workspace root and enforce size, lexical traversal, and symlink escape limits. Regex command policy is a guardrail, not isolation. Use `just-bash` or `docker-bash` for team-facing agents.
+File tools run under the configured workspace root and enforce size, lexical traversal, and symlink escape limits. `just-bash` network access is off by default; configure `runtime.justBash.network` when the agent needs `curl` or other network-backed commands. Regex command classification is a guardrail, not isolation. Use `just-bash` or `docker-bash` for team-facing agents.
 
 ### Store
 
@@ -138,13 +138,13 @@ Scheduled turns reuse the same handler path as inbound messages with `scheduled:
 
 ### Attachments
 
-`src/io/attachments.ts` defines the attachment store boundary. The default attachment store writes through the configured runtime workspace. Adapters download provider files into this store and add attachment references to the user prompt.
+`src/io/attachments.ts` defines the attachment store and processing boundary. The default attachment store writes through the configured runtime workspace. Adapters download provider files into this store. Attachment processing passes supported images to Pi as image inputs, inlines text-like files, optionally converts document formats through a configured local converter, and falls back to attachment references for unsupported files or failed conversions.
 
 ### Delivery And Streaming
 
 `src/io/delivery.ts` serializes provider sends and retries provider rate limits with backoff. It is per-adapter-instance pacing, not a distributed provider-wide limiter.
 
-`src/io/reply-stream.ts` supports optional draft replies while Pi emits text deltas. Streaming is adapter-mediated and throttled to avoid editing on every token. Confirmed tool calls stop the draft before approval UI is sent.
+`src/io/reply-stream.ts` supports optional draft replies while Pi emits text deltas. Streaming is adapter-mediated and throttled to avoid editing on every token. Confirmed tool calls stop the draft before approval UI is sent; after approval, continuations can start a new draft stream.
 
 ## Request Flow
 
@@ -193,6 +193,5 @@ Not supported today:
 - Cloudflare Workers / Fetch API adapters
 - multi-replica distributed delivery limiting
 - crash-durable approval replay beyond persisted call and approval rows
-- serverless file bundle generation
 
 These are intentionally documented as outside the shipped runtime until the adapter, store, scheduler, attachment, and deploy story is complete.

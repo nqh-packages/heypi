@@ -81,6 +81,22 @@ telegram({
 
 Telegram delivery calls are serialized by default. Provider rate limits are retried with backoff. Ambiguous timeouts are not retried for non-idempotent sends such as new messages or file uploads. Most apps do not need to configure this. If Telegram needs slower pacing, set `delivery: { intervalMs: 500 }`; use `delivery: false` only for development or custom transport control.
 
+## Approvals
+
+Approval cards use Telegram inline buttons. Approved and rejected actions edit the original approval message, keep the approval details visible, and remove the buttons:
+
+```text
+✅ Approval `approval-id` approved by @alice.
+```
+
+```text
+⛔ Approval `approval-id` rejected by @alice.
+```
+
+Private failure paths, such as unauthorized approval attempts, are shown as callback alerts and are not prefixed as successful approvals.
+
+Expired approval clicks keep the approval details visible, mark the approval expired, and remove the buttons.
+
 ## Groups
 
 For groups:

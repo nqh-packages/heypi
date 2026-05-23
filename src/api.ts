@@ -16,9 +16,27 @@ export {
 	type RuntimeLimits,
 } from "./config.js";
 export { consoleLogger, type Format, type Level, type Logger } from "./core/log.js";
-export { classifyCommand } from "./core/policy.js";
+export { classifyCommand, commandConfirm } from "./core/policy.js";
 export type { CommandPolicyConfig, CommandRisk, Confirm, ReplyAttachment } from "./core/types.js";
-export { type Attachment, type AttachmentStore, attachmentPrompt, runtimeAttachments } from "./io/attachments.js";
+export {
+	type AgentToolDefinition,
+	type CoreToolConfig,
+	type CoreToolDefinition,
+	type CoreToolName,
+	type CoreToolOption,
+	type CoreToolsConfig,
+	coreTools,
+} from "./core-tools.js";
+export {
+	type Attachment,
+	type AttachmentInput,
+	type AttachmentProcessingConfig,
+	type AttachmentStore,
+	attachmentPrompt,
+	type DocumentConverterConfig,
+	type ImageAttachment,
+	runtimeAttachments,
+} from "./io/attachments.js";
 export type { DeliveryConfig } from "./io/delivery.js";
 export {
 	type DiscordAllow,

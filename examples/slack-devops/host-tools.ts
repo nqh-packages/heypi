@@ -2,7 +2,13 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { type AgentContextProvider, type CommandPolicyConfig, classifyCommand, tool } from "@hunvreus/heypi";
+import {
+	type AgentContextProvider,
+	type CommandPolicyConfig,
+	classifyCommand,
+	commandConfirm,
+	tool,
+} from "@hunvreus/heypi";
 import { Type } from "@sinclair/typebox";
 
 type Host = {
@@ -16,8 +22,27 @@ type Host = {
 	cwd?: string;
 	aliases: string[];
 	tags: string[];
+	facts: HostFacts;
 	createdAt: string;
 	updatedAt: string;
+};
+
+type HostFacts = {
+	hostname?: string;
+	os?: string;
+	arch?: string;
+	kernel?: string;
+	distro?: string;
+	pkgManager?: string;
+	serviceManager?: string;
+	containerRuntime?: string;
+	containerVersion?: string;
+	runningContainers?: string;
+	diskRoot?: string;
+	memory?: string;
+	ports?: string;
+	gitUser?: string;
+	hasSudo?: boolean;
 };
 
 type HostFile = {
@@ -45,6 +70,7 @@ const MAX_OUTPUT = 64 * 1024;
 export function createHostTools(options: HostToolOptions) {
 	const store = new HostStore(options.root);
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+	const remoteConfirm = commandConfirm(options.commandPolicy);
 	return [
 		tool({
 			name: "host_key_ensure",
@@ -84,6 +110,7 @@ export function createHostTools(options: HostToolOptions) {
 							`key=${host.key}`,
 							host.tags.length ? `tags=${host.tags.join(",")}` : undefined,
 							host.aliases.length ? `aliases=${host.aliases.join(",")}` : undefined,
+							hasFacts(host.facts) ? `facts=${factsText(host.facts)}` : undefined,
 						]
 							.filter(Boolean)
 							.join(" "),
@@ -101,6 +128,49 @@ export function createHostTools(options: HostToolOptions) {
 				const matches = await store.resolve(host);
 				if (!matches.length) return `host not found: ${host}`;
 				return matches.map((item) => JSON.stringify(publicHost(item), null, 2)).join("\n");
+			},
+		}),
+		tool<{ hosts?: string[] }>({
+			name: "host_facts_refresh",
+			description:
+				"Probe configured remote hosts over SSH and persist facts: hostname, OS, architecture, kernel, distro, package manager, service manager, container runtime/version, disk, memory, ports 80/443, git user, and passwordless sudo availability.",
+			parameters: Type.Object({
+				hosts: Type.Optional(
+					Type.Array(
+						Type.String({ description: "Host ids, aliases, or tags. Omit to refresh all configured hosts." }),
+						{
+							maxItems: 8,
+						},
+					),
+				),
+			}),
+			execute: async ({ hosts }, signal) => {
+				const targets = hosts?.length ? await store.resolveMany(hosts) : (await store.read()).hosts;
+				if (!targets.length) return hosts?.length ? `no hosts matched: ${hosts.join(", ")}` : "no hosts configured";
+				const out: string[] = [];
+				for (const host of targets) {
+					const key = store.privateKeyPath(host.key);
+					if (!existsSync(key)) {
+						out.push(`${host.id}: missing private key: ${host.key}; run host_key_ensure first`);
+						continue;
+					}
+					const result = await ssh(
+						host,
+						key,
+						store.knownHostsPath(),
+						factsCommand(),
+						Math.min(timeoutMs, 20_000),
+						signal,
+					);
+					if (result.code !== 0 && !result.out.trim()) {
+						out.push(`${host.id}: ${result.err.trim() || `fact probe failed with exit ${result.code}`}`);
+						continue;
+					}
+					const facts = parseFacts(result.out);
+					await store.setFacts(host.id, facts);
+					out.push(`${host.id}: ${factsText(facts)}`);
+				}
+				return out.join("\n");
 			},
 		}),
 		tool<{
@@ -157,21 +227,25 @@ export function createHostTools(options: HostToolOptions) {
 				return removed ? `host removed: ${removed.id}` : `host not found: ${host}`;
 			},
 		}),
-		tool<{ hosts: string[]; command: string }>({
+		tool<{ hosts: string[]; purpose: string; command: string }>({
 			name: "host_exec",
 			description:
-				"Run a command on one or more configured remote hosts over SSH using the file-backed host inventory.",
+				"Run a command on one or more configured remote hosts over SSH using the file-backed host inventory. Include a concise human purpose explaining why the command is being run.",
 			parameters: Type.Object({
 				hosts: Type.Array(Type.String({ description: "Host ids, aliases, or tags." }), {
 					minItems: 1,
 					maxItems: 8,
 				}),
+				purpose: Type.String({ description: "Human-readable reason for this remote command." }),
 				command: Type.String({ description: "Remote shell command." }),
 			}),
-			confirm: ({ command }) => {
-				const risk = classifyCommand(String(command), options.commandPolicy);
-				if (risk.risk !== "approval") return false;
-				return { reason: `Run remote command: ${String(command)} (${risk.reason})` };
+			confirm: ({ hosts, purpose, command }) => {
+				const confirmation = remoteConfirm({ command });
+				if (!confirmation) return false;
+				const target = Array.isArray(hosts) ? hosts.map(String).join(", ") : String(hosts);
+				const message =
+					typeof purpose === "string" && purpose.trim() ? purpose.trim() : `Run remote command on ${target}.`;
+				return { ...confirmation, message };
 			},
 			execute: async ({ hosts, command }, signal) => {
 				const risk = classifyCommand(command, options.commandPolicy);
@@ -250,6 +324,7 @@ export class HostStore {
 			cwd: input.cwd?.trim() || existing?.cwd,
 			aliases: cleanList(input.aliases ?? existing?.aliases ?? []).map(hostId),
 			tags: cleanList(input.tags ?? existing?.tags ?? []).map(tag),
+			facts: existing?.facts ?? {},
 			createdAt: existing?.createdAt ?? now,
 			updatedAt: now,
 		};
@@ -282,6 +357,15 @@ export class HostStore {
 		return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
 	}
 
+	async setFacts(input: string, facts: HostFacts): Promise<Host | undefined> {
+		const current = await this.read();
+		const host = current.hosts.find((item) => item.id === input);
+		if (!host) return undefined;
+		const next = { ...host, facts, updatedAt: new Date().toISOString() };
+		await this.write({ version: 1, hosts: [...current.hosts.filter((item) => item.id !== host.id), next] });
+		return next;
+	}
+
 	async summary(): Promise<string> {
 		const hosts = (await this.read()).hosts;
 		if (!hosts.length) return "";
@@ -293,6 +377,7 @@ export class HostStore {
 					host.tags.length ? `tags=${host.tags.join(",")}` : undefined,
 					host.aliases.length ? `aliases=${host.aliases.join(",")}` : undefined,
 					host.cwd ? `cwd=${host.cwd}` : undefined,
+					hasFacts(host.facts) ? `facts=${factsText(host.facts)}` : undefined,
 				]
 					.filter(Boolean)
 					.join(" "),
@@ -452,9 +537,108 @@ function normalizeHost(input: Host): Host {
 		cwd: input.cwd,
 		aliases: cleanList(input.aliases).map(hostId),
 		tags: cleanList(input.tags).map(tag),
+		facts: normalizeFacts(input.facts),
 		createdAt: input.createdAt || now,
 		updatedAt: input.updatedAt || now,
 	};
+}
+
+function factsCommand(): string {
+	return [
+		"set +e",
+		"echo hostname=$(hostname 2>/dev/null || true)",
+		"echo os=$(uname -s 2>/dev/null || true)",
+		"echo arch=$(uname -m 2>/dev/null || true)",
+		"echo kernel=$(uname -r 2>/dev/null || true)",
+		"if [ -f /etc/os-release ]; then . /etc/os-release; echo distro=$" + "{ID:-$NAME}; fi",
+		"if command -v apt-get >/dev/null 2>&1; then echo pkgManager=apt; elif command -v yum >/dev/null 2>&1; then echo pkgManager=yum; elif command -v dnf >/dev/null 2>&1; then echo pkgManager=dnf; elif command -v apk >/dev/null 2>&1; then echo pkgManager=apk; elif command -v zypper >/dev/null 2>&1; then echo pkgManager=zypper; fi",
+		"if command -v systemctl >/dev/null 2>&1; then echo serviceManager=systemd; elif command -v service >/dev/null 2>&1; then echo serviceManager=service; fi",
+		"if command -v docker >/dev/null 2>&1; then echo containerRuntime=docker; elif command -v podman >/dev/null 2>&1; then echo containerRuntime=podman; elif command -v nerdctl >/dev/null 2>&1; then echo containerRuntime=nerdctl; fi",
+		"if command -v docker >/dev/null 2>&1; then echo containerVersion=$(docker --version 2>/dev/null | sed 's/[[:space:]]\\+/ /g'); elif command -v podman >/dev/null 2>&1; then echo containerVersion=$(podman --version 2>/dev/null | sed 's/[[:space:]]\\+/ /g'); elif command -v nerdctl >/dev/null 2>&1; then echo containerVersion=$(nerdctl --version 2>/dev/null | sed 's/[[:space:]]\\+/ /g'); fi",
+		"if command -v docker >/dev/null 2>&1; then echo runningContainers=$(docker ps --format '{{.Names}}' 2>/dev/null | paste -sd, -); elif command -v podman >/dev/null 2>&1; then echo runningContainers=$(podman ps --format '{{.Names}}' 2>/dev/null | paste -sd, -); fi",
+		'echo diskRoot=$(df -h / 2>/dev/null | awk \'NR==2 {print $4 " free / " $2 " total (" $5 " used)"}\')',
+		'echo memory=$(free -m 2>/dev/null | awk \'/^Mem:/ {print $7 "MB available / " $2 "MB total"}\')',
+		"if command -v ss >/dev/null 2>&1; then echo ports=$(ss -ltn 2>/dev/null | awk 'NR>1 && ($4 ~ /:80$/ || $4 ~ /:443$/) {print $4}' | paste -sd, -); elif command -v netstat >/dev/null 2>&1; then echo ports=$(netstat -ltn 2>/dev/null | awk 'NR>2 && ($4 ~ /:80$/ || $4 ~ /:443$/) {print $4}' | paste -sd, -); fi",
+		"echo gitUser=$(git config --global user.name 2>/dev/null || true)",
+		"if sudo -n true >/dev/null 2>&1; then echo hasSudo=true; else echo hasSudo=false; fi",
+	].join("; ");
+}
+
+function parseFacts(text: string): HostFacts {
+	const facts: HostFacts = {};
+	for (const line of text.split(/\r?\n/)) {
+		const [key, ...rest] = line.trim().split("=");
+		const value = rest.join("=").trim();
+		if (!key || !value) continue;
+		if (key === "hostname") facts.hostname = value;
+		if (key === "os") facts.os = value;
+		if (key === "arch") facts.arch = value;
+		if (key === "kernel") facts.kernel = value;
+		if (key === "distro") facts.distro = value;
+		if (key === "pkgManager") facts.pkgManager = value;
+		if (key === "serviceManager") facts.serviceManager = value;
+		if (key === "containerRuntime") facts.containerRuntime = value;
+		if (key === "containerVersion") facts.containerVersion = value;
+		if (key === "runningContainers") facts.runningContainers = value;
+		if (key === "diskRoot") facts.diskRoot = value;
+		if (key === "memory") facts.memory = value;
+		if (key === "ports") facts.ports = value;
+		if (key === "gitUser") facts.gitUser = value;
+		if (key === "hasSudo") facts.hasSudo = value === "true";
+	}
+	return facts;
+}
+
+function factsText(facts: HostFacts): string {
+	return [
+		`hostname=${facts.hostname ?? "unknown"}`,
+		`os=${facts.os ?? "unknown"}`,
+		`arch=${facts.arch ?? "unknown"}`,
+		`kernel=${facts.kernel ?? "unknown"}`,
+		`distro=${facts.distro ?? "unknown"}`,
+		`pkg=${facts.pkgManager ?? "unknown"}`,
+		`service=${facts.serviceManager ?? "unknown"}`,
+		`container=${facts.containerRuntime ?? "unknown"}`,
+		facts.containerVersion ? `containerVersion=${facts.containerVersion}` : undefined,
+		facts.runningContainers ? `containers=${facts.runningContainers}` : undefined,
+		facts.diskRoot ? `diskRoot=${facts.diskRoot}` : undefined,
+		facts.memory ? `memory=${facts.memory}` : undefined,
+		facts.ports ? `ports=${facts.ports}` : undefined,
+		facts.gitUser ? `gitUser=${facts.gitUser}` : undefined,
+		`sudo=${facts.hasSudo === undefined ? "unknown" : facts.hasSudo ? "yes" : "no"}`,
+	]
+		.filter((item): item is string => typeof item === "string")
+		.join(", ");
+}
+
+function hasFacts(facts: HostFacts): boolean {
+	return Object.values(facts).some((value) => value !== undefined);
+}
+
+function normalizeFacts(input: unknown): HostFacts {
+	if (!input || typeof input !== "object" || Array.isArray(input)) return {};
+	const raw = input as Record<string, unknown>;
+	return {
+		hostname: stringFact(raw.hostname),
+		os: stringFact(raw.os),
+		arch: stringFact(raw.arch),
+		kernel: stringFact(raw.kernel),
+		distro: stringFact(raw.distro),
+		pkgManager: stringFact(raw.pkgManager),
+		serviceManager: stringFact(raw.serviceManager),
+		containerRuntime: stringFact(raw.containerRuntime),
+		containerVersion: stringFact(raw.containerVersion),
+		runningContainers: stringFact(raw.runningContainers),
+		diskRoot: stringFact(raw.diskRoot),
+		memory: stringFact(raw.memory),
+		ports: stringFact(raw.ports),
+		gitUser: stringFact(raw.gitUser),
+		hasSudo: typeof raw.hasSudo === "boolean" ? raw.hasSudo : undefined,
+	};
+}
+
+function stringFact(input: unknown): string | undefined {
+	return typeof input === "string" && input.trim() ? input.trim() : undefined;
 }
 
 function keyName(input: unknown): string {

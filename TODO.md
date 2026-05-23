@@ -17,7 +17,6 @@
   - Optional profile/project memory.
   - Explicit tools such as `remember`, `recall`, and `forget`.
 - Add more adapters.
-  - Discord.
   - Teams.
   - Email.
 - Document trusted MCP usage through Pi extensions.

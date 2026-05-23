@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { attachmentPrompt, responseBytes, runtimeAttachments } from "../src/io/attachments.js";
+import { attachmentInput, attachmentPrompt, responseBytes, runtimeAttachments } from "../src/io/attachments.js";
 import type { Runtime } from "../src/runtime/types.js";
 
 test("attachmentPrompt appends stable paths and metadata", () => {
@@ -31,6 +31,77 @@ test("runtimeAttachments writes sanitized files under runtime root", async () =>
 	assert.equal(file.path, "/incoming/slack/1700.1/F123-hello_world.txt");
 	assert.equal(file.size, 5);
 	assert.equal(await readFile(join(root, "incoming/slack/1700.1/F123-hello_world.txt"), "utf8"), "hello");
+});
+
+test("attachmentInput inlines text and passes images separately", async () => {
+	const root = await mkdtemp(join(tmpdir(), "heypi-attachment-input-"));
+	await writeFile(join(root, "note.txt"), "hello", "utf8");
+	await writeFile(join(root, "image.png"), Buffer.from("png bytes"));
+
+	const out = await attachmentInput(runtime(root, "host-bash"), "review", [
+		{ name: "note.txt", path: "note.txt", mimeType: "text/plain", size: 5 },
+		{ name: "image.png", path: "image.png", mimeType: "image/png", size: 9 },
+	]);
+
+	assert.equal(out.text, 'review\n<file name="note.txt">\nhello\n</file>\n<file name="image.png"></file>');
+	assert.deepEqual(out.images, [
+		{ type: "image", data: Buffer.from("png bytes").toString("base64"), mimeType: "image/png" },
+	]);
+});
+
+test("attachmentInput keeps unsupported binaries as references", async () => {
+	const root = await mkdtemp(join(tmpdir(), "heypi-attachment-bin-"));
+	await writeFile(join(root, "file.pdf"), Buffer.from("%PDF"));
+
+	const out = await attachmentInput(runtime(root, "host-bash"), "review", [
+		{ name: "file.pdf", path: "file.pdf", mimeType: "application/pdf", size: 4 },
+	]);
+
+	assert.equal(out.text, "review\nAttachments:\n- file.pdf: file.pdf (application/pdf, 4 bytes)");
+	assert.deepEqual(out.images, []);
+});
+
+test("attachmentInput can convert supported binaries with optional document command", async () => {
+	const root = await mkdtemp(join(tmpdir(), "heypi-attachment-document-"));
+	const command = join(root, "convert-document.mjs");
+	await writeFile(join(root, "file.pdf"), Buffer.from("%PDF"));
+	await writeFile(
+		command,
+		[
+			"#!/usr/bin/env node",
+			"import { readFileSync } from 'node:fs';",
+			"const path = process.argv[2];",
+			"readFileSync(path);",
+			"process.stdout.write('# Converted\\n\\nbody');",
+		].join("\n"),
+		"utf8",
+	);
+	await chmod(command, 0o755);
+
+	const out = await attachmentInput(
+		runtime(root, "host-bash"),
+		"review",
+		[{ name: "file.pdf", path: "file.pdf", mimeType: "application/pdf", size: 4 }],
+		{ documents: { command, extensions: [".pdf"], timeoutMs: 1000 } },
+	);
+
+	assert.equal(out.text, 'review\n<file name="file.pdf">\n# Converted\n\nbody\n</file>');
+	assert.deepEqual(out.images, []);
+});
+
+test("attachmentInput falls back to references when document conversion is disabled", async () => {
+	const root = await mkdtemp(join(tmpdir(), "heypi-attachment-document-disabled-"));
+	await writeFile(join(root, "file.pdf"), Buffer.from("%PDF"));
+
+	const out = await attachmentInput(
+		runtime(root, "host-bash"),
+		"review",
+		[{ name: "file.pdf", path: "file.pdf", mimeType: "application/pdf", size: 4 }],
+		{ documents: false },
+	);
+
+	assert.equal(out.text, "review\nAttachments:\n- file.pdf: file.pdf (application/pdf, 4 bytes)");
+	assert.deepEqual(out.images, []);
 });
 
 test("runtimeAttachments rejects oversized inbound files", async () => {

@@ -1,10 +1,15 @@
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { stat, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
+import { promisify } from "node:util";
 import type { AttachmentConfig } from "../config.js";
+import type { Logger } from "../core/log.js";
 import type { ReplyAttachment } from "../core/types.js";
 import { hostMkdir, hostRealPath, hostWritePath, virtualPath } from "../runtime/path.js";
 import type { Runtime } from "../runtime/types.js";
+
+const runFile = promisify(execFile);
 
 export type Attachment = {
 	name: string;
@@ -38,6 +43,34 @@ export type ResolvedAttachment = {
 	mimeType?: string;
 	size: number;
 };
+
+export type ImageAttachment = {
+	type: "image";
+	data: string;
+	mimeType: string;
+};
+
+export type AttachmentInput = {
+	text: string;
+	images: ImageAttachment[];
+};
+
+export type AttachmentProcessingConfig = {
+	documents?: false | DocumentConverterConfig;
+};
+
+export type DocumentConverterConfig =
+	| true
+	| {
+			command?: string;
+			args?: string[];
+			env?: Record<string, string>;
+			timeoutMs?: number;
+			maxBytes?: number;
+			maxOutputBytes?: number;
+			extensions?: string[];
+			mimeTypes?: string[];
+	  };
 
 /** Creates a workspace-backed attachment store. Writes files under `incoming/`. */
 export function runtimeAttachments(runtime: Runtime, config: AttachmentConfig = {}): AttachmentStore {
@@ -121,9 +154,151 @@ export function attachmentPrompt(text: string, attachments?: Attachment[]): stri
 	return [body, "Attachments:", ...lines].filter(Boolean).join("\n");
 }
 
+/** Converts saved provider attachments into Pi-style prompt text and image inputs. */
+export async function attachmentInput(
+	runtime: Runtime,
+	text: string,
+	attachments?: Attachment[],
+	config: AttachmentProcessingConfig = {},
+	logger?: Logger,
+): Promise<AttachmentInput> {
+	if (!attachments?.length) return { text: text.trim(), images: [] };
+	const images: ImageAttachment[] = [];
+	const parts = [text.trim()].filter(Boolean);
+	const refs: Attachment[] = [];
+	for (const attachment of attachments) {
+		const full = await hostRealPath(runtime.root, attachment.path);
+		const mimeType = supportedImageMime(attachment);
+		if (mimeType) {
+			const data = await readFile(full);
+			images.push({ type: "image", data: data.toString("base64"), mimeType });
+			parts.push(`<file name="${attachment.path}"></file>`);
+			continue;
+		}
+		if (textFile(attachment)) {
+			try {
+				const content = await readFile(full, "utf8");
+				parts.push(`<file name="${attachment.path}">\n${content}\n</file>`);
+				continue;
+			} catch {
+				refs.push(attachment);
+				continue;
+			}
+		}
+		const markdown = await convertDocument({ attachment, full, config: config.documents, logger });
+		if (markdown !== undefined) {
+			parts.push(`<file name="${attachment.path}">\n${markdown}\n</file>`);
+			continue;
+		}
+		refs.push(attachment);
+	}
+	const prompt = refs.length ? attachmentPrompt(parts.join("\n"), refs) : parts.join("\n");
+	return { text: prompt, images };
+}
+
 function details(file: Attachment): string {
 	const values = [file.mimeType, file.size === undefined ? undefined : `${file.size} bytes`].filter(Boolean);
 	return values.length ? ` (${values.join(", ")})` : "";
+}
+
+function supportedImageMime(file: Attachment): string | undefined {
+	const mime = file.mimeType?.toLowerCase();
+	if (mime && ["image/jpeg", "image/png", "image/gif", "image/webp"].includes(mime)) return mime;
+	const ext = extname(file.name).toLowerCase();
+	if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+	if (ext === ".png") return "image/png";
+	if (ext === ".gif") return "image/gif";
+	if (ext === ".webp") return "image/webp";
+	return undefined;
+}
+
+function textFile(file: Attachment): boolean {
+	const mime = file.mimeType?.toLowerCase();
+	if (mime?.startsWith("text/")) return true;
+	if (
+		mime &&
+		[
+			"application/json",
+			"application/xml",
+			"application/x-yaml",
+			"application/yaml",
+			"application/javascript",
+			"application/typescript",
+			"application/x-sh",
+		].includes(mime)
+	) {
+		return true;
+	}
+	return [
+		".c",
+		".conf",
+		".cpp",
+		".css",
+		".csv",
+		".go",
+		".html",
+		".java",
+		".js",
+		".json",
+		".jsx",
+		".log",
+		".md",
+		".py",
+		".rs",
+		".sh",
+		".sql",
+		".ts",
+		".tsx",
+		".txt",
+		".xml",
+		".yaml",
+		".yml",
+	].includes(extname(file.name).toLowerCase());
+}
+
+async function convertDocument(input: {
+	attachment: Attachment;
+	full: string;
+	config?: false | DocumentConverterConfig;
+	logger?: Logger;
+}): Promise<string | undefined> {
+	if (!input.config) return undefined;
+	const config = input.config === true ? {} : input.config;
+	if (!documentSupported(input.attachment, config)) return undefined;
+	const size = input.attachment.size ?? (await stat(input.full).catch(() => undefined))?.size;
+	if (config.maxBytes !== undefined && size !== undefined && size > config.maxBytes) {
+		input.logger?.warn("attachment.document_too_large", {
+			path: input.attachment.path,
+			size,
+			maxBytes: config.maxBytes,
+		});
+		return undefined;
+	}
+	const command = config.command ?? process.env.HEYPI_DOCUMENT_CONVERTER ?? "heypi-convert-document";
+	try {
+		const out = await runFile(command, [...(config.args ?? []), input.full], {
+			timeout: config.timeoutMs ?? 15_000,
+			maxBuffer: config.maxOutputBytes ?? 1_000_000,
+			encoding: "utf8",
+			env: config.env ?? { PATH: process.env.PATH ?? "" },
+		});
+		const text = out.stdout.trim();
+		return text || undefined;
+	} catch (error) {
+		input.logger?.warn("attachment.document_failed", {
+			path: input.attachment.path,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return undefined;
+	}
+}
+
+function documentSupported(file: Attachment, config: Exclude<DocumentConverterConfig, true>): boolean {
+	const ext = extname(file.name).toLowerCase();
+	const extensions = config.extensions ?? [".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".epub"];
+	if (extensions.includes(ext)) return true;
+	const mime = file.mimeType?.toLowerCase();
+	return Boolean(mime && config.mimeTypes?.map((value) => value.toLowerCase()).includes(mime));
 }
 
 function safeName(input: string): string {

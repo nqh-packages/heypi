@@ -1,5 +1,6 @@
 import type { ModelConfig } from "../config.js";
 import type { Reply } from "../core/types.js";
+import type { Attachment } from "../io/attachments.js";
 import type { ReplyStream } from "../io/reply-stream.js";
 import type { StoredMessage } from "../store/types.js";
 
@@ -12,6 +13,7 @@ export type AgentReq = {
 	trace?: string;
 	text: string;
 	model?: ModelConfig;
+	attachments?: Attachment[];
 	signal?: AbortSignal;
 	stream?: ReplyStream;
 };

@@ -92,6 +92,8 @@ agent/
 Missing files/folders are ignored. You can override everything in code:
 
 ```ts
+import { coreTools } from "@hunvreus/heypi";
+
 agentFrom("./agent", {
 	id: "devops",
 	model: "openai/gpt-5-mini",
@@ -105,7 +107,7 @@ agentFrom("./agent", {
 	],
 	skills: ["./shared/skills"],
 	extensions: ["./agent/extensions"],
-	tools: [myTool],
+	tools: [...coreTools(), myTool],
 });
 ```
 
@@ -114,13 +116,40 @@ Use `context` for small dynamic system-prompt blocks such as known hosts, tenant
 
 ## Tools And Approvals
 
-heypi exposes its own Pi-compatible tools instead of Pi's raw built-ins. `bash` can require approval through policy. File tools run inside the runtime workspace.
+heypi exposes its own Pi-compatible core tools instead of Pi's raw built-ins. Omit `tools` to use the default core tools. If you pass `tools`, include `coreTools()` explicitly:
+
+```ts
+import { agentFrom, commandConfirm, coreTools } from "@hunvreus/heypi";
+
+agentFrom("./agent", {
+	model: "openai/gpt-5-mini",
+	tools: [
+		...coreTools(),
+		myTool,
+	],
+});
+```
+
+Core tools are `bash`, `read`, `write`, `edit`, `grep`, `find`, `ls`, and `history`. By default, `bash` uses `commandConfirm()` while file and search tools run without approval. Customize or disable core tools with the same tool-shaped config:
+
+```ts
+tools: [
+	...coreTools({
+		bash: { confirm: commandConfirm({ approve: [/\bmake deploy\b/] }) },
+		write: false,
+		edit: false,
+	}),
+	myTool,
+];
+```
+
+Use `bash: true` to enable bash without command confirmation.
 
 Add custom tools with Pi `ToolDefinition` objects or the `tool()` helper. Raw Pi tools are supported for non-confirmed tools. Use `tool()` when a custom tool needs approval so heypi can replay the call after approval:
 
 ```ts
-import { Type } from "@sinclair/typebox";
 import { tool } from "@hunvreus/heypi";
+import { Type } from "@sinclair/typebox";
 
 const pageService = tool<{ service: string; reason: string }>({
 	name: "page_service",
@@ -129,7 +158,7 @@ const pageService = tool<{ service: string; reason: string }>({
 		service: Type.String(),
 		reason: Type.String(),
 	}),
-	confirm: ({ service }) => ({ reason: `Page ${service}` }),
+	confirm: ({ service }) => ({ message: `Page ${service}.` }),
 	execute: async ({ service, reason }) => `page recorded: service=${service} reason=${reason}`,
 });
 ```
@@ -145,7 +174,9 @@ status <call-id>
 cancel <turn-id-or-trace>
 ```
 
-Slack, Telegram, and Discord also render provider-native buttons. The `approvals` chat command lists pending approvals. If `approval.approvers` is configured, only those actors can use it; otherwise it lists pending approvals in the current thread only.
+Slack, Telegram, and Discord also render provider-native buttons. Approval cards are updated in place with `✅ Approval ... approved by ...` or `⛔ Approval ... rejected by ...`, while preserving the original approval details and removing the buttons. If an approved call continues running, the adapter sends a follow-up progress/result message instead of blocking the button acknowledgement.
+
+The `approvals` chat command lists pending approvals. If `approval.approvers` is configured, only those actors can use it; otherwise it lists pending approvals in the current thread only.
 
 See [`docs/EXTENDING.md`](docs/EXTENDING.md) for custom tools, confirmation, and command risk classification.
 
@@ -199,7 +230,7 @@ Socket Mode does not require a signing secret unless you also use HTTP interacti
 
 See [`docs/SLACK.md`](docs/SLACK.md) for scopes, events, manifests, and common setup failures.
 
-Inbound Slack messages can be restricted with `allow`. Omitted `teams`, `channels`, and `users` allow all delivered events for that dimension. `channels` applies to non-DM channels only. `allow.dms` defaults to `true`. `trigger` defaults to `"mention"` for top-level channel messages; thread replies and accepted DMs trigger by default. Use `threadTrigger: "mention"` to require mentions in thread replies. Slack progress defaults to an immediate `Thinking...` message plus an `eyes` reaction.
+Inbound Slack messages can be restricted with `allow`. Omitted `teams`, `channels`, and `users` allow all delivered events for that dimension. `channels` applies to non-DM channels only. `allow.dms` defaults to `true`. `trigger` defaults to `"mention"` for top-level channel messages; thread replies and accepted DMs trigger by default. Use `threadTrigger: "mention"` to require mentions in thread replies. Slack progress defaults to an immediate `Thinking...` message; top-level channel messages also get an `eyes` reaction. Thread replies, DMs, and approval continuations do not get the reaction.
 
 ### Telegram
 
@@ -282,7 +313,9 @@ Webhook is async-first: requests return `202` while the turn runs. Pass `replyUr
 
 See [`docs/WEBHOOK.md`](docs/WEBHOOK.md) for auth, threading, async callbacks, sync mode, and approvals.
 
-Streaming is opt-in. Use `streaming: true` for the defaults, or pass `{ intervalMs, minChars, maxFailures }` to tune it. When enabled, heypi posts a draft reply and edits it at a bounded cadence while Pi emits text deltas. Confirmed tool calls stop the draft stream before approval buttons are sent; after approval, continuation can start a new draft stream. Progress messages are suppressed while streaming is active to avoid duplicate visible replies.
+Streaming is opt-in. Use `streaming: true` for the defaults, or pass `{ intervalMs, minChars, maxFailures }` to tune it. When enabled, heypi posts a draft reply and edits it at a bounded cadence while Pi emits text deltas. Confirmed tool calls stop the draft stream before approval buttons are sent; after approval, continuation can start a new draft stream.
+
+Slack still shows its immediate `Thinking...` progress message while streaming, and top-level channel messages get the configured reaction. Telegram and Discord suppress progress messages while streaming is active to avoid duplicate visible replies.
 
 Adapter delivery is serialized by default and retries provider rate limits with backoff. Ambiguous timeouts are not retried for non-idempotent sends such as new chat messages or file uploads, because the provider may already have accepted the request.
 
@@ -378,6 +411,12 @@ runtime: {
 		maxEntries: 10_000,
 	},
 	justBash: {
+		// Network is off by default. Enable it only when the agent needs curl.
+		network: {
+			allowedUrlPrefixes: ["https://docs.example.com"],
+			// or, for trusted/dev agents:
+			// dangerouslyAllowFullInternetAccess: true,
+		},
 		python: false,
 		javascript: false,
 	},
@@ -393,27 +432,52 @@ runtime: {
 }
 ```
 
-Command approval policy can be customized separately from runtime selection:
+Command confirmation is configured on the `bash` core tool:
 
 ```ts
-approval: {
-	commands: {
-		allow: [/^curl -I https:\/\/status\.example\.com\b/],
-		approve: [/\bmake deploy\b/],
-		block: [/\bgh repo delete\b/],
+tools: [
+	...coreTools({
+		bash: {
+			confirm: commandConfirm({
+				allow: [/^curl -I https:\/\/status\.example\.com\b/],
+				approve: [/\bmake deploy\b/],
+				block: [/\bgh repo delete\b/],
+			}),
+		},
+	}),
+]
+```
+
+Custom `block` patterns and built-in hard blocks win first. Shell commands are parsed into simple command segments before `allow` patterns are applied, so an allowed `curl` segment cannot allow a separate `ufw`, `docker`, or other risky segment in the same compound command. Parse failures fail closed and require approval. Use `coreTools({ bash: true })` when you want bash enabled without command confirmation.
+
+`just-bash` is the default production runtime. Network access is disabled by default; configure `runtime.justBash.network` when bash should be able to use `curl` for public docs or APIs. Prefer `allowedUrlPrefixes` for team bots. Use `dangerouslyAllowFullInternetAccess` only for trusted/dev agents.
+
+`docker-bash` runs `bash` in `docker run --rm` with the workspace mounted at `/workspace`; file tools still use heypi's bounded runtime file operations. Docker commands run as the current uid/gid by default when Node exposes them; set `docker.user: false` to disable that or pass an explicit user string. Custom `docker.args` can weaken or defeat container isolation, so review them carefully. `guarded-bash` and `host-bash` execute host bash from the configured workspace root; they are not OS isolation. Host runtimes receive a minimal environment by default; pass `hostEnv` to expose specific variables.
+
+Regex command classification is a guardrail, not a sandbox. Use `just-bash` or `docker-bash` for team-facing agents.
+
+Runtime file tools enforce path containment, symlink escape checks, and size limits by default: 1 MB per file, 5 MB per scan, and 10,000 traversed entries. Override `runtime.limits` for larger workspaces.
+
+Attachments are limited to 25 MB by default, including streamed provider downloads. Override with `attachments: { maxBytes }`, or pass `attachments: { store }` for custom storage. Inbound images are passed to Pi as image inputs, and text-like files are inlined into the prompt. Optional document conversion can be enabled for PDF, Office, and ebook-style formats:
+
+```ts
+attachments: {
+	process: {
+		documents: {
+			// Defaults to process.env.HEYPI_DOCUMENT_CONVERTER or "heypi-convert-document".
+			command: "./bin/heypi-convert-document",
+			timeoutMs: 15_000,
+			maxBytes: 10_000_000,
+			maxOutputBytes: 1_000_000,
+			// Defaults to PATH only so API keys/secrets are not inherited.
+			// Set env explicitly if your wrapper needs more.
+			env: { PATH: process.env.PATH ?? "" },
+		},
 	},
 }
 ```
 
-Custom `block` patterns and built-in hard blocks win first. Custom `allow` patterns can bypass approval patterns, but cannot bypass block patterns.
-
-`just-bash` is the default production runtime. `docker-bash` runs `bash` in `docker run --rm` with the workspace mounted at `/workspace`; file tools still use heypi's bounded runtime file operations. Docker commands run as the current uid/gid by default when Node exposes them; set `docker.user: false` to disable that or pass an explicit user string. Custom `docker.args` can weaken or defeat container isolation, so review them carefully. `guarded-bash` and `host-bash` execute host bash from the configured workspace root; they are not OS isolation. Host runtimes receive a minimal environment by default; pass `hostEnv` to expose specific variables.
-
-Regex command policy is a guardrail, not a sandbox. Use `just-bash` or `docker-bash` for team-facing agents.
-
-Runtime file tools enforce path containment, symlink escape checks, and size limits by default: 1 MB per file, 5 MB per scan, and 10,000 traversed entries. Override `runtime.limits` for larger workspaces.
-
-Attachments are limited to 25 MB by default, including streamed provider downloads. Override with `attachments: { maxBytes }`, or pass `attachments: { store }` for custom storage.
+The document converter is not bundled. Provide a local wrapper command yourself, preferably in a constrained environment. The wrapper may use MarkItDown, a JS converter, Docker, or another implementation; it must accept one local file path and print Markdown to stdout. Do not enable network, plugin, or cloud conversion for untrusted chat attachments unless you have sandboxed and reviewed that path. If conversion fails or is disabled, heypi keeps the original attachment reference.
 
 ## Shutdown
 
@@ -442,7 +506,7 @@ Cloudflare Workers and other serverless Fetch runtimes are not supported yet. Th
 
 ## Examples
 
-- [`examples/slack-devops`](examples/slack-devops): Slack DevOps assistant with runbook search, governed local bash, approval-gated SSH host tools, public-key onboarding, and file-backed host inventory.
+- [`examples/slack-devops`](examples/slack-devops): Slack DevOps assistant with runbook search, local runtime tools, approval-gated SSH host tools, public-key onboarding, and file-backed host inventory.
 - [`examples/telegram-workout`](examples/telegram-workout): Telegram fitness coach with onboarding, saved profile/plan, daily heartbeat check-ins, and a local workout log.
 
 ## Why heypi?

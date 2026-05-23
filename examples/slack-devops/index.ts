@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadEnvFile } from "node:process";
-import { agentFrom, consoleLogger, createHeypi, slack, sqliteStore, workspace } from "@hunvreus/heypi";
+import { agentFrom, consoleLogger, coreTools, createHeypi, slack, sqliteStore, workspace } from "@hunvreus/heypi";
 import { createHostContext, createHostTools } from "./host-tools.js";
 import { createRunbookTools } from "./runbook-tools.js";
 
@@ -26,11 +26,19 @@ function list(name: string): string[] {
 }
 
 const commandPolicy = {
+	allow: [
+		/^\s*curl\s+-I\b[^;&|]*\bhttps?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/|\b)\s*(?:\|\|\s*true\s*)?$/i,
+		/^\s*curl\s+[^;&|]*--head\b[^;&|]*\bhttps?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/|\b)\s*(?:\|\|\s*true\s*)?$/i,
+	],
 	approve: [
 		/\bsystemctl\s+(restart|stop|start|reload|enable|disable|mask|unmask)\b/i,
 		/\bdocker\s+(restart|stop|rm|compose\s+up|compose\s+down|prune)\b/i,
 		/\bapt(?:-get)?\s+(install|remove|purge|upgrade|dist-upgrade|autoremove)\b/i,
 		/\byum\s+(install|remove|update|upgrade)\b/i,
+		/\bufw\s+(allow|deny|delete|enable|disable|reload|reset)\b/i,
+		/\bfirewall-cmd\b/i,
+		/\biptables\b/i,
+		/\bnft\s+(add|delete|flush|insert|replace)\b/i,
 	],
 	block: [/\bcat\s+.*(?:\.env|id_rsa|id_ed25519)\b/i, /\bchmod\s+777\b/i],
 };
@@ -78,14 +86,13 @@ const app = createHeypi({
 		// }),
 	],
 	agent: agentFrom("./examples/slack-devops/agent", {
-		model: "openai/gpt-5-mini",
+		model: { provider: "openai", name: "gpt-5-mini", verbosity: "low" },
 		context: [hostContext],
-		tools: [...runbookTools, ...hostTools],
+		tools: [...coreTools({ bash: true }), ...runbookTools, ...hostTools],
 	}),
 	approval: {
 		approvers: list("HEYPI_APPROVERS"),
 		expiresInMs: 10 * 60 * 1000,
-		commands: commandPolicy,
 	},
 	runtime: {
 		name: "just-bash",
@@ -94,6 +101,7 @@ const app = createHeypi({
 		maxConcurrentPerChat: 1,
 		timeoutMs: 120_000,
 		justBash: {
+			network: { dangerouslyAllowFullInternetAccess: true },
 			python: false,
 			javascript: false,
 		},

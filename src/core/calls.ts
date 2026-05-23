@@ -1,13 +1,12 @@
 import type { ApprovalConfig } from "../config.js";
 import type { Queue } from "../runtime/queue.js";
 import type { Runtime } from "../runtime/types.js";
-import type { Approvals, Calls, Store } from "../store/types.js";
+import type { Approval, Approvals, Calls, Store } from "../store/types.js";
 import { isAbortError } from "./active.js";
 import { renderCall } from "./format.js";
 import { type Logger, logger } from "./log.js";
-import { classifyCommand } from "./policy.js";
 import { assertTransition, parseCallState } from "./state.js";
-import type { CommandPolicyConfig, Confirm, Intent, Reply, ToolExecute } from "./types.js";
+import type { Confirm, Intent, Reply, ToolExecute } from "./types.js";
 
 export type CallContext = {
 	trace?: string;
@@ -41,7 +40,7 @@ export class CallRunner {
 		private readonly approval: ApprovalConfig = {},
 		private readonly log: Logger = logger,
 		private readonly transaction?: Store["transaction"],
-		private readonly commands: CommandPolicyConfig = {},
+		private readonly bashConfirm?: Confirm,
 	) {}
 
 	register(tool: string, execute: ToolExecute): void {
@@ -52,10 +51,12 @@ export class CallRunner {
 		intent: Exclude<Intent, { kind: "ask" | "help" | "cancel" | "approvals" | "thread_status" }>,
 		context: CallContext = {},
 		signal?: AbortSignal,
+		onApproved?: (reply: Reply) => Promise<void>,
+		onExpired?: (reply: Reply) => Promise<void>,
 	): Promise<Reply> {
 		if (intent.kind === "bash") return this.bash(intent.channel, intent.actor, intent.cmd, context, signal);
-		if (intent.kind === "approve") return this.handleApprove(intent, signal);
-		if (intent.kind === "deny") return this.handleDeny(intent);
+		if (intent.kind === "approve") return this.handleApprove(intent, signal, onApproved, onExpired);
+		if (intent.kind === "deny") return this.handleDeny(intent, onExpired);
 		return this.handleStatus(intent);
 	}
 
@@ -67,15 +68,7 @@ export class CallRunner {
 		signal?: AbortSignal,
 	): Promise<Reply> {
 		if (!this.runtime.bash) throw new Error(`runtime ${this.runtime.name} does not support bash`);
-		const risk = classifyCommand(command, this.commands);
-		this.log.debug("call.policy", {
-			...context,
-			channel,
-			tool: "bash",
-			runtime: this.runtime.name,
-			risk: risk.risk,
-			reason: risk.reason,
-		});
+		const confirmation = confirm(this.bashConfirm, { command });
 		const base = {
 			channel,
 			actor,
@@ -83,11 +76,11 @@ export class CallRunner {
 			command,
 			args: { command },
 			runtime: this.runtime.name,
-			policyReason: risk.reason,
+			policyReason: confirmation?.policyReason ?? confirmation?.reason ?? "tool default",
 			context,
 		};
-		if (risk.risk === "block") return this.block(base, risk.reason);
-		if (risk.risk === "approval") return this.requestApproval(base, risk.reason);
+		if (confirmation?.block) return this.block(base, confirmation.block);
+		if (confirmation) return this.requestApproval(base, confirmation.reason);
 		const row = await this.createCall(base, "running");
 		return this.executeBash(row.id, channel, command, context, signal);
 	}
@@ -108,9 +101,10 @@ export class CallRunner {
 			actor: input.actor,
 			tool: input.name,
 			args: input.args,
-			policyReason: confirmation?.reason ?? "tool default",
+			policyReason: confirmation?.policyReason ?? confirmation?.reason ?? "tool default",
 			context: input.context,
 		};
+		if (confirmation?.block) return this.block(base, confirmation.block);
 		if (confirmation) return this.requestApproval(base, confirmation.reason);
 		const row = await this.createCall(base, "running");
 		return this.executeTool(row.id, input.name, input.args, input.execute, input.context ?? {}, input.signal);
@@ -254,7 +248,12 @@ export class CallRunner {
 		}
 	}
 
-	private async handleApprove(intent: Extract<Intent, { kind: "approve" }>, signal?: AbortSignal): Promise<Reply> {
+	private async handleApprove(
+		intent: Extract<Intent, { kind: "approve" }>,
+		signal?: AbortSignal,
+		onApproved?: (reply: Reply) => Promise<void>,
+		onExpired?: (reply: Reply) => Promise<void>,
+	): Promise<Reply> {
 		const approval = await this.approvals.getByChannel(intent.channel, intent.approvalId);
 		if (!approval) return { text: "approval not found", private: true };
 		if (approval.state !== "pending") {
@@ -278,27 +277,7 @@ export class CallRunner {
 			});
 			return renderCall({ callId: approval.callId, state: "unauthorized", approvers: this.approvers() });
 		}
-		if (this.expired(approval.expiresAt)) {
-			const resolved = await this.updateApprovalCall(approval.id, "denied", "heypi", approval.callId, "blocked");
-			if (!resolved) {
-				this.log.info("approval.already_resolved", {
-					approval: approval.id,
-					call: approval.callId,
-					channel: approval.channel,
-					actor: intent.actor,
-					state: "resolved",
-				});
-				return { text: "approval already resolved", private: true };
-			}
-			this.log.info("approval.expired", {
-				approval: approval.id,
-				call: approval.callId,
-				channel: approval.channel,
-				actor: intent.actor,
-				expiresAt: approval.expiresAt ?? undefined,
-			});
-			return { text: "approval expired", private: true };
-		}
+		if (this.expired(approval.expiresAt)) return this.expireApproval(approval, intent.actor, onExpired);
 		const current = await this.calls.get(approval.callId);
 		if (!current) throw new Error("call not found");
 		assertTransition(parseCallState(current.state), "running");
@@ -321,6 +300,19 @@ export class CallRunner {
 			thread: current.threadId ?? undefined,
 			turn: current.turnId ?? undefined,
 		});
+		if (onApproved) {
+			try {
+				await onApproved(this.approvalSummary(approval, current));
+			} catch (error) {
+				this.log.warn("approval.ack_failed", {
+					approval: approval.id,
+					call: approval.callId,
+					channel: approval.channel,
+					actor: intent.actor,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
 		if (current.tool === "bash") {
 			if (approval.runtime !== this.runtime.name) throw new Error(`approval runtime mismatch: ${approval.runtime}`);
 			if (!current.command) throw new Error("approved bash call missing command");
@@ -331,7 +323,10 @@ export class CallRunner {
 		return this.executeTool(approval.callId, current.tool, args(current.args), execute, context(current), signal);
 	}
 
-	private async handleDeny(intent: Extract<Intent, { kind: "deny" }>): Promise<Reply> {
+	private async handleDeny(
+		intent: Extract<Intent, { kind: "deny" }>,
+		onExpired?: (reply: Reply) => Promise<void>,
+	): Promise<Reply> {
 		const approval = await this.approvals.getByChannel(intent.channel, intent.approvalId);
 		if (!approval) return { text: "approval not found", private: true };
 		if (approval.state !== "pending") {
@@ -355,6 +350,7 @@ export class CallRunner {
 			});
 			return renderCall({ callId: approval.callId, state: "unauthorized", approvers: this.approvers() });
 		}
+		if (this.expired(approval.expiresAt)) return this.expireApproval(approval, intent.actor, onExpired);
 		const current = await this.calls.get(approval.callId);
 		if (!current) throw new Error("call not found");
 		assertTransition(parseCallState(current.state), "blocked");
@@ -377,7 +373,7 @@ export class CallRunner {
 			thread: current.threadId ?? undefined,
 			turn: current.turnId ?? undefined,
 		});
-		return renderCall({ callId: approval.callId, state: "blocked", reason: "denied" });
+		return this.approvalSummary(approval, current);
 	}
 
 	private async updateApprovalCall(
@@ -417,9 +413,72 @@ export class CallRunner {
 		return typeof expiresAt === "number" && expiresAt <= Date.now();
 	}
 
+	private async expireApproval(
+		approval: Approval,
+		actor: string,
+		onExpired?: (reply: Reply) => Promise<void>,
+	): Promise<Reply> {
+		const resolved = await this.updateApprovalCall(approval.id, "denied", "heypi", approval.callId, "blocked");
+		if (!resolved) {
+			this.log.info("approval.already_resolved", {
+				approval: approval.id,
+				call: approval.callId,
+				channel: approval.channel,
+				actor,
+				state: "resolved",
+			});
+			return { text: "Approval already resolved.", private: true };
+		}
+		this.log.info("approval.expired", {
+			approval: approval.id,
+			call: approval.callId,
+			channel: approval.channel,
+			actor,
+			expiresAt: approval.expiresAt ?? undefined,
+		});
+		const current = await this.calls.get(approval.callId);
+		const summary = current ? this.approvalSummary(approval, current).text : "";
+		const reply = {
+			text: [summary, "⏱️ Approval expired. Ask me to try again if this is still needed."]
+				.filter(Boolean)
+				.join("\n\n"),
+		};
+		if (onExpired) {
+			try {
+				await onExpired(reply);
+				return { text: "", silent: true };
+			} catch (error) {
+				this.log.warn("approval.expired_ack_failed", {
+					approval: approval.id,
+					call: approval.callId,
+					channel: approval.channel,
+					actor,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+		return { text: "Approval expired. Ask me to try again if this is still needed.", private: true };
+	}
+
+	private approvalSummary(
+		approval: { id: string; callId: string; reason: string; runtime: string },
+		call: { tool: string; command: string | null; args: string | null },
+	): Reply {
+		return renderCall({
+			callId: approval.callId,
+			state: "pending_approval",
+			approvalId: approval.id,
+			reason: approval.reason,
+			command: call.command ?? `${call.tool} ${call.args ?? ""}`.trim(),
+			runtime: approval.runtime,
+			approvers: this.approvers(),
+			instructions: false,
+		});
+	}
+
 	private async handleStatus(intent: Extract<Intent, { kind: "status" }>): Promise<Reply> {
 		const row = await this.calls.getByChannel(intent.channel, intent.callId);
-		if (!row) return { text: "status: call not found" };
+		if (!row) return { text: "Call not found.", private: true };
 		return renderCall({
 			callId: row.id,
 			state: row.state,
@@ -431,10 +490,24 @@ export class CallRunner {
 	}
 }
 
-function confirm(input: Confirm | undefined, args: Record<string, unknown>): { reason: string } | undefined {
+function confirm(
+	input: Confirm | undefined,
+	args: Record<string, unknown>,
+):
+	| {
+			reason: string;
+			policyReason?: string;
+			block?: string;
+	  }
+	| undefined {
 	if (!input) return undefined;
-	if (typeof input === "function") return input(args) || undefined;
-	return input;
+	const out = typeof input === "function" ? input(args) || undefined : input;
+	if (!out) return undefined;
+	return {
+		reason: out.message ?? out.reason ?? "Approval required.",
+		policyReason: out.policyReason,
+		block: out.block,
+	};
 }
 
 function args(input: string | null): Record<string, unknown> {

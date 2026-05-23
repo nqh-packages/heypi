@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { discordAllowed, discordTriggered } from "../src/io/discord.js";
-import { slack, slackAllowed, slackTriggered } from "../src/io/slack.js";
+import { slack, slackAllowed, slackMessageSubtypeAllowed, slackTriggered } from "../src/io/slack.js";
 import { telegramAllowed, telegramTriggered } from "../src/io/telegram.js";
 
 test("Slack allowlists default to accepting delivered message events", () => {
@@ -61,6 +61,13 @@ test("Slack trigger defaults to mention for channels and message for DMs", () =>
 			reason: "mention_required",
 		},
 	);
+});
+
+test("Slack allows normal messages and file shares", () => {
+	assert.equal(slackMessageSubtypeAllowed(undefined), true);
+	assert.equal(slackMessageSubtypeAllowed("file_share"), true);
+	assert.equal(slackMessageSubtypeAllowed("message_changed"), false);
+	assert.equal(slackMessageSubtypeAllowed("bot_message"), false);
 });
 
 test("Slack HTTP mode requires a signing secret at runtime", () => {

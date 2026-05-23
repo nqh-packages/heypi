@@ -74,7 +74,17 @@ export function slack(input: SlackConfig): Adapter {
 			botUserId = await slackBotUserId(bolt.client, log);
 			bolt.action(APPROVE, async ({ ack, body, action, client }) => {
 				await ack();
-				await handleAction({ kind: "approve", body, action, client, handler, logger: log, delivery });
+				await handleAction({
+					kind: "approve",
+					body,
+					action,
+					client,
+					handler,
+					logger: log,
+					delivery,
+					progress: input.progress,
+					streaming: input.streaming,
+				});
 			});
 			bolt.action(DENY, async ({ ack, body, action, client }) => {
 				await ack();
@@ -103,7 +113,7 @@ export function slack(input: SlackConfig): Adapter {
 					thread_ts?: string;
 					files?: SlackFile[];
 				};
-				if (msg.subtype || msg.bot_id) return;
+				if (!slackMessageSubtypeAllowed(msg.subtype) || msg.bot_id) return;
 				const channel = msg.channel ?? "unknown";
 				const team = slackTeam(body) ?? msg.team;
 				const mode = input.reply ?? "thread";
@@ -640,6 +650,7 @@ function startProgress(input: {
 			await placeholderTask;
 			if (placeholder) {
 				const ts = placeholder;
+				placeholder = undefined;
 				await input.delivery
 					.run(() => input.client.chat.delete({ channel: input.channel, ts }), {
 						...input.context,
@@ -651,6 +662,7 @@ function startProgress(input: {
 			}
 			if (reacted && reaction && input.source) {
 				const source = input.source;
+				reacted = false;
 				await input.delivery
 					.run(
 						() => input.client.reactions.remove({ channel: input.channel, timestamp: source, name: reaction }),
@@ -686,6 +698,10 @@ function threadKey(mode: SlackReply, msg: { channel?: string; ts?: string; threa
 
 function shouldReact(mode: SlackReply, msg: { channel?: string; ts?: string; thread_ts?: string }) {
 	return mode === "thread" && !msg.channel?.startsWith("D") && !msg.thread_ts && !!msg.ts;
+}
+
+export function slackMessageSubtypeAllowed(subtype: string | undefined): boolean {
+	return subtype === undefined || subtype === "file_share";
 }
 
 async function slackBotUserId(client: SlackClient, logger: Logger): Promise<string | undefined> {
@@ -819,12 +835,75 @@ async function handleAction(input: {
 	handler: Handler;
 	logger: Logger;
 	delivery: DeliveryQueue;
+	progress?: SlackConfig["progress"];
+	streaming?: ReplyStreamOption;
 }): Promise<void> {
 	const value = stringProp(record(input.action), "value");
 	const context = actionContext(input.body);
 	if (!context.channel || !context.actor) return;
 	if (!value && input.kind !== "status") return;
+	const actionChannel = context.channel;
+	const actionActor = context.actor;
 	const trace = `${input.kind}:${value ?? context.message ?? context.trigger ?? Date.now()}`;
+	const target = context.threadTs ?? context.message;
+	let acknowledged = false;
+	let progress: ReturnType<typeof startProgress> | undefined;
+	const acknowledge = async (text: string) => {
+		const actionMessage = context.message;
+		if (!actionMessage) return;
+		const first = actionResultText(input.kind, actionActor, text, value);
+		await input.delivery.run(
+			() =>
+				input.client.chat.update({
+					channel: actionChannel,
+					ts: actionMessage,
+					text: first,
+					blocks: [{ type: "section", text: { type: "mrkdwn", text: first } }],
+				}),
+			{ trace, adapter: "slack", channel: actionChannel },
+		);
+		acknowledged = true;
+		if (input.kind === "approve" && target) {
+			progress = startProgress({
+				channel: actionChannel,
+				source: actionMessage,
+				target,
+				client: input.client,
+				progress: { ...slackProgress(input.progress), reaction: false },
+				cancelId: trace,
+				logger: input.logger,
+				context: { trace, adapter: "slack", channel: actionChannel, thread: target },
+				delivery: input.delivery,
+			});
+		}
+	};
+	const replace = async (out: Outbound) => {
+		const actionMessage = context.message;
+		if (!actionMessage) return;
+		await input.delivery.run(
+			() =>
+				input.client.chat.update({
+					channel: actionChannel,
+					ts: actionMessage,
+					text: out.text,
+					blocks: [{ type: "section", text: { type: "mrkdwn", text: out.text } }],
+				}),
+			{ trace, adapter: "slack", channel: actionChannel },
+		);
+	};
+	const stream =
+		input.kind === "approve" && target
+			? slackReplyStream({
+					config: input.streaming,
+					client: input.client,
+					channel: context.channel,
+					thread: target,
+					approval: undefined,
+					logger: input.logger,
+					context: { trace, adapter: "slack", channel: context.channel, thread: target },
+					delivery: input.delivery,
+				})
+			: undefined;
 	try {
 		const out = await input.handler({
 			trace,
@@ -836,9 +915,13 @@ async function handleAction(input: {
 			thread: context.thread,
 			text: input.kind === "status" ? "status" : `${input.kind} ${value}`,
 			data: input.body,
+			stream,
+			ack: input.kind === "approve" ? (out) => acknowledge(out.text) : undefined,
+			replace: input.kind === "approve" || input.kind === "deny" ? replace : undefined,
 		});
 		if (!out) return;
 		if (out.private || !context.message) {
+			await stream?.clear?.();
 			const channel = context.channel;
 			const actor = context.actor;
 			await postEphemeralChunks({
@@ -855,7 +938,31 @@ async function handleAction(input: {
 		const channel = context.channel;
 		const message = context.message;
 		const chunks = slackChunks(out.text, true);
-		const first = actionResultText(input.kind, context.actor, chunks[0] ?? "");
+		const streamed = Boolean(stream?.complete?.() && input.kind === "approve");
+		if (acknowledged) {
+			if (streamed) {
+				await progress?.stop();
+			} else {
+				const sent = await progress?.update(out.text, out.approval);
+				await postPublicChunks({
+					client: input.client,
+					channel,
+					text: out.text,
+					approval: sent ? undefined : out.approval,
+					thread: context.threadTs ?? message,
+					skipFirst: sent,
+					logger: input.logger,
+					context: { trace, adapter: "slack", channel, thread: context.threadTs ?? message },
+					delivery: input.delivery,
+				});
+			}
+			input.logger.debug("adapter.send", { trace, adapter: "slack", channel: context.channel, update: true });
+			return;
+		}
+		const first = actionResultText(input.kind, context.actor, streamed ? "" : (chunks[0] ?? ""), value);
+		if (streamed) {
+			await progress?.stop();
+		}
 		await input.delivery.run(
 			() =>
 				input.client.chat.update({
@@ -866,7 +973,7 @@ async function handleAction(input: {
 				}),
 			{ trace, adapter: "slack", channel },
 		);
-		for (let index = 1; index < chunks.length; index++) {
+		for (let index = streamed ? chunks.length : 1; index < chunks.length; index++) {
 			await input.delivery.run(
 				() =>
 					input.client.chat.postMessage({
@@ -879,6 +986,7 @@ async function handleAction(input: {
 		}
 		input.logger.debug("adapter.send", { trace, adapter: "slack", channel: context.channel, update: true });
 	} catch (error) {
+		await stream?.stop();
 		input.logger.error("adapter.error", {
 			trace,
 			adapter: "slack",
@@ -896,13 +1004,32 @@ async function handleAction(input: {
 				})
 				.catch(() => undefined);
 		}
+	} finally {
+		await progress?.stop();
 	}
 }
 
-function actionResultText(kind: "approve" | "deny" | "cancel" | "status", actor: string, text: string): string {
-	if (kind === "approve") return [`Approved by <@${actor}>.`, text].filter(Boolean).join("\n\n");
-	if (kind === "deny") return [`Rejected by <@${actor}>.`, text].filter(Boolean).join("\n\n");
+function actionResultText(
+	kind: "approve" | "deny" | "cancel" | "status",
+	actor: string,
+	text: string,
+	id?: string,
+): string {
+	if (kind === "approve") {
+		const prefix = id ? `✅ Approval \`${id}\` approved by <@${actor}>.` : `✅ Approved by <@${actor}>.`;
+		return [prefix, text].filter(Boolean).join("\n\n");
+	}
+	if (kind === "deny") {
+		const callId = rejectedCallId(text);
+		if (callId) return `⛔ Action \`${callId}\` rejected by <@${actor}>.`;
+		const prefix = id ? `⛔ Approval \`${id}\` rejected by <@${actor}>.` : `⛔ Rejected by <@${actor}>.`;
+		return [prefix, text].filter(Boolean).join("\n\n");
+	}
 	return text;
+}
+
+function rejectedCallId(text: string): string | undefined {
+	return /^Action `([^`]+)` rejected\./.exec(text.trim())?.[1];
 }
 
 function cancelBlocks(text: string, id: string): SlackBlock[] {

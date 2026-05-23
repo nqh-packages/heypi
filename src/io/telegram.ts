@@ -294,6 +294,50 @@ async function handleCallback(input: {
 	const actor = String(input.callback.from.id);
 	const thread = threadKey(msg);
 	const trace = `telegram:${input.callback.id}`;
+	let answered = false;
+	let acknowledged = false;
+	const answer = async () => {
+		if (answered) return;
+		await input.delivery.run(() => input.client.answerCallbackQuery({ callback_query_id: input.callback.id }), {
+			trace,
+			adapter: "telegram",
+			channel,
+		});
+		answered = true;
+	};
+	const acknowledge = async (text: string) => {
+		await answer();
+		await input.delivery.run(
+			() =>
+				input.client.editMessageText({
+					chat_id: msg.chat.id,
+					message_id: msg.message_id,
+					text: firstChunk(
+						actionResultText(
+							action.kind,
+							telegramActor(input.callback.from),
+							text,
+							"id" in action ? action.id : undefined,
+						),
+						false,
+					),
+				}),
+			{ trace, adapter: "telegram", channel },
+		);
+		acknowledged = true;
+	};
+	const replace = async (out: Outbound) => {
+		await answer();
+		await input.delivery.run(
+			() =>
+				input.client.editMessageText({
+					chat_id: msg.chat.id,
+					message_id: msg.message_id,
+					text: firstChunk(out.text, false),
+				}),
+			{ trace, adapter: "telegram", channel },
+		);
+	};
 	try {
 		const out = await input.handler({
 			trace,
@@ -304,16 +348,15 @@ async function handleCallback(input: {
 			thread,
 			text: actionText(action),
 			data: input.callback,
+			ack: action.kind === "approve" ? (out) => acknowledge(out.text) : undefined,
+			replace: action.kind === "approve" || action.kind === "deny" ? replace : undefined,
 		});
 		if (!out) {
-			await input.delivery.run(() => input.client.answerCallbackQuery({ callback_query_id: input.callback.id }), {
-				trace,
-				adapter: "telegram",
-				channel,
-			});
+			await answer();
 			return;
 		}
 		if (out.private) {
+			answered = true;
 			await input.delivery.run(
 				() =>
 					input.client.answerCallbackQuery({
@@ -325,18 +368,35 @@ async function handleCallback(input: {
 			);
 			return;
 		}
-		await input.delivery.run(() => input.client.answerCallbackQuery({ callback_query_id: input.callback.id }), {
-			trace,
-			adapter: "telegram",
-			channel,
-		});
+		await answer();
+		if (acknowledged) {
+			await sendTelegramOutput({
+				client: input.client,
+				store: input.store,
+				message: msg,
+				out,
+				logger: input.logger,
+				context: { trace, adapter: "telegram", channel, thread },
+				delivery: input.delivery,
+			});
+			return;
+		}
+		const rendered = {
+			...out,
+			text: actionResultText(
+				action.kind,
+				telegramActor(input.callback.from),
+				out.text,
+				"id" in action ? action.id : undefined,
+			),
+		};
 		await input.delivery.run(
 			() =>
 				input.client.editMessageText({
 					chat_id: msg.chat.id,
 					message_id: msg.message_id,
-					text: firstChunk(out.text, Boolean(out.approval)),
-					reply_markup: out.approval ? approvalMarkup(out.approval) : undefined,
+					text: firstChunk(rendered.text, Boolean(rendered.approval)),
+					reply_markup: rendered.approval ? approvalMarkup(rendered.approval) : undefined,
 				}),
 			{ trace, adapter: "telegram", channel },
 		);
@@ -344,7 +404,7 @@ async function handleCallback(input: {
 			client: input.client,
 			store: input.store,
 			message: msg,
-			out,
+			out: rendered,
 			skipFirst: true,
 			logger: input.logger,
 			context: { trace, adapter: "telegram", channel, thread },
@@ -638,6 +698,7 @@ function startProgress(input: {
 			await task;
 			if (!placeholder) return;
 			const messageId = placeholder;
+			placeholder = undefined;
 			await input.delivery
 				.run(() => input.client.deleteMessage({ chat_id: input.chatId, message_id: messageId }), {
 					...input.context,
@@ -745,6 +806,28 @@ function telegramMentions(text = "", username: string): boolean {
 function actionText(action: TelegramAction): string {
 	if (action.kind === STATUS) return "status";
 	return `${action.kind} ${action.id}`;
+}
+
+function actionResultText(kind: TelegramAction["kind"], actor: string, text: string, id?: string): string {
+	if (kind === "approve") {
+		const prefix = id ? `✅ Approval \`${id}\` approved by ${actor}.` : `✅ Approved by ${actor}.`;
+		return [prefix, text].filter(Boolean).join("\n\n");
+	}
+	if (kind === "deny") {
+		const callId = rejectedCallId(text);
+		if (callId) return `⛔ Action \`${callId}\` rejected by ${actor}.`;
+		const prefix = id ? `⛔ Approval \`${id}\` rejected by ${actor}.` : `⛔ Rejected by ${actor}.`;
+		return [prefix, text].filter(Boolean).join("\n\n");
+	}
+	return text;
+}
+
+function rejectedCallId(text: string): string | undefined {
+	return /^Action `([^`]+)` rejected\./.exec(text.trim())?.[1];
+}
+
+function telegramActor(user: TelegramUser): string {
+	return user.username ? `@${user.username}` : `user ${user.id}`;
 }
 
 export function telegramChunks(text: string, hasMarkup = false): string[] {
@@ -954,6 +1037,7 @@ type TelegramUser = {
 	id: number;
 	is_bot?: boolean;
 	username?: string;
+	first_name?: string;
 };
 
 type TelegramMessage = {

@@ -55,6 +55,17 @@ export class TurnRepo {
 			.limit(Math.min(Math.max(input.limit ?? 5, 1), 25));
 	}
 
+	async listRunning(input: { agent?: string; limit?: number } = {}): Promise<TurnRow[]> {
+		const filters = [eq(turn.state, "running")];
+		if (input.agent) filters.push(eq(turn.agent, input.agent));
+		return await this.db
+			.select()
+			.from(turn)
+			.where(and(...filters))
+			.orderBy(desc(turn.updatedAt))
+			.limit(Math.min(Math.max(input.limit ?? 100, 1), 500));
+	}
+
 	async getByTrace(threadId: string, trace: string): Promise<TurnRow | undefined> {
 		const rows = await this.db
 			.select()
