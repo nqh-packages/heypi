@@ -13,6 +13,12 @@ async function tempDb(): Promise<{ path: string; cleanup: () => Promise<void> }>
 	return { path: join(dir, "store.db"), cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
+async function aborted(signal?: AbortSignal): Promise<void> {
+	if (!signal) return;
+	if (signal?.aborted) return;
+	await new Promise<void>((resolve) => signal?.addEventListener("abort", () => resolve(), { once: true }));
+}
+
 test("sqlite locks reject concurrent owners and allow release", async () => {
 	const db = await tempDb();
 	try {
@@ -48,6 +54,27 @@ test("sqlite locks can acquire after ttl expiry", async () => {
 	}
 });
 
+test("sqlite locks can refresh ownership", async () => {
+	const db = await tempDb();
+	try {
+		const store = sqliteStore({ path: db.path });
+		await store.setup();
+		assert.ok(store.locks);
+
+		const first = await store.locks.acquire({ key: "app:a", owner: "one", ttlMs: 10 });
+		assert.ok(first);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		const refreshed = await store.locks.refresh({ key: "app:a", owner: "one", ttlMs: 60_000 });
+		const wrongOwner = await store.locks.refresh({ key: "app:a", owner: "two", ttlMs: 60_000 });
+
+		assert.equal(refreshed?.owner, "one");
+		assert.equal(wrongOwner, undefined);
+		assert.ok((refreshed?.expiresAt ?? 0) > first.expiresAt);
+	} finally {
+		await db.cleanup();
+	}
+});
+
 test("sqlite locks can clear by prefix", async () => {
 	const db = await tempDb();
 	try {
@@ -71,7 +98,7 @@ test("sqlite locks can clear by prefix", async () => {
 	}
 });
 
-test("handler returns private busy reply when a thread lock is held", async () => {
+test("handler returns public busy reply when a thread lock is held without an active run", async () => {
 	const db = await tempDb();
 	try {
 		const store = sqliteStore({ path: db.path });
@@ -110,8 +137,208 @@ test("handler returns private busy reply when a thread lock is held", async () =
 			text: "deploy",
 		});
 
-		assert.equal(out?.private, true);
-		assert.match(out?.text ?? "", /already running/);
+		assert.equal(out?.private, undefined);
+		assert.equal(out?.finalPlacement, "thread");
+		assert.match(out?.text ?? "", /still working/i);
+	} finally {
+		await db.cleanup();
+	}
+});
+
+test("handler steers same-thread asks into the active run by default", async () => {
+	const db = await tempDb();
+	try {
+		const store = sqliteStore({ path: db.path });
+		await store.setup();
+		let release!: () => void;
+		let sessionReady!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const ready = new Promise<void>((resolve) => {
+			sessionReady = resolve;
+		});
+		const steered: string[] = [];
+		const handler = createHandler({
+			agentId: "a",
+			store,
+			callRunner: new CallRunner(store.calls, store.approvals, new Queue({}), {
+				name: "host-bash",
+				root: ".",
+				capabilities: {},
+			}),
+			agent: {
+				ask: async (req) => {
+					req.onLiveSession?.({
+						steer: async (text) => {
+							steered.push(text);
+						},
+						followUp: async () => undefined,
+					});
+					sessionReady();
+					await gate;
+					return { text: "done" };
+				},
+				continue: async () => ({ text: "should not run" }),
+			},
+		});
+
+		const first = handler({
+			trace: "trace-1",
+			provider: "slack",
+			eventId: "event-1",
+			channel: "C1",
+			actor: "U1",
+			thread: "C1:T1",
+			text: "deploy",
+		});
+		await ready;
+		const second = await handler({
+			trace: "trace-2",
+			provider: "slack",
+			eventId: "event-2",
+			channel: "C1",
+			actor: "U2",
+			actorName: "Jane",
+			thread: "C1:T1",
+			text: "also check nginx",
+		});
+		release();
+		const firstOut = await first;
+
+		assert.equal(second?.text, "Got it. I'll include that.");
+		assert.equal(second?.finalPlacement, "thread");
+		assert.deepEqual(steered, ["[Message from Jane (U2)]\nalso check nginx"]);
+		assert.equal(firstOut?.finalPlacement, "thread");
+	} finally {
+		await db.cleanup();
+	}
+});
+
+test("handler lets only the run initiator cancel when no approvers are configured", async () => {
+	const db = await tempDb();
+	try {
+		const store = sqliteStore({ path: db.path });
+		await store.setup();
+		let signal: AbortSignal | undefined;
+		let ready!: () => void;
+		const started = new Promise<void>((resolve) => {
+			ready = resolve;
+		});
+		const handler = createHandler({
+			agentId: "a",
+			store,
+			callRunner: new CallRunner(store.calls, store.approvals, new Queue({}), {
+				name: "host-bash",
+				root: ".",
+				capabilities: {},
+			}),
+			agent: {
+				ask: async (req) => {
+					signal = req.signal;
+					ready();
+					await aborted(req.signal);
+					return { text: "done" };
+				},
+				continue: async () => ({ text: "should not run" }),
+			},
+		});
+
+		const first = handler({
+			trace: "trace-1",
+			provider: "slack",
+			eventId: "event-1",
+			channel: "C1",
+			actor: "U_REQUESTER",
+			thread: "C1:T1",
+			text: "deploy",
+		});
+		await started;
+
+		const rejected = await handler({
+			trace: "trace-cancel-other",
+			provider: "slack",
+			eventId: "event-cancel-other",
+			channel: "C1",
+			actor: "U_OTHER",
+			thread: "C1:T1",
+			text: "cancel trace-1",
+		});
+		assert.equal(rejected?.private, true);
+		assert.match(rejected?.text ?? "", /not allowed/i);
+		assert.equal(signal?.aborted, false);
+
+		const cancelled = await handler({
+			trace: "trace-cancel-owner",
+			provider: "slack",
+			eventId: "event-cancel-owner",
+			channel: "C1",
+			actor: "U_REQUESTER",
+			thread: "C1:T1",
+			text: "cancel trace-1",
+		});
+		const firstOut = await first;
+
+		assert.equal(cancelled?.text, "Cancelled.");
+		assert.equal(signal?.aborted, true);
+		assert.match(firstOut?.text ?? "", /cancelled/i);
+	} finally {
+		await db.cleanup();
+	}
+});
+
+test("handler lets configured approvers cancel another actor's run", async () => {
+	const db = await tempDb();
+	try {
+		const store = sqliteStore({ path: db.path });
+		await store.setup();
+		let ready!: () => void;
+		const started = new Promise<void>((resolve) => {
+			ready = resolve;
+		});
+		const handler = createHandler({
+			agentId: "a",
+			store,
+			approval: { approvers: ["U_APPROVER"] },
+			callRunner: new CallRunner(store.calls, store.approvals, new Queue({}), {
+				name: "host-bash",
+				root: ".",
+				capabilities: {},
+			}),
+			agent: {
+				ask: async (req) => {
+					ready();
+					await aborted(req.signal);
+					return { text: "done" };
+				},
+				continue: async () => ({ text: "should not run" }),
+			},
+		});
+
+		const first = handler({
+			trace: "trace-approver-run",
+			provider: "slack",
+			eventId: "event-approver-run",
+			channel: "C1",
+			actor: "U_REQUESTER",
+			thread: "C1:T1",
+			text: "deploy",
+		});
+		await started;
+
+		const cancelled = await handler({
+			trace: "trace-cancel-approver",
+			provider: "slack",
+			eventId: "event-cancel-approver",
+			channel: "C1",
+			actor: "U_APPROVER",
+			thread: "C1:T1",
+			text: "cancel trace-approver-run",
+		});
+		const firstOut = await first;
+
+		assert.equal(cancelled?.text, "Cancelled.");
+		assert.match(firstOut?.text ?? "", /cancelled/i);
 	} finally {
 		await db.cleanup();
 	}

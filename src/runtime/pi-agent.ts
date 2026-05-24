@@ -153,6 +153,16 @@ export class PiAgent implements Agent {
 		};
 		if (req.signal?.aborted) abort();
 		else req.signal?.addEventListener("abort", abort, { once: true });
+		req.onLiveSession?.({
+			steer: async (text, attachments) => {
+				const prompt = await attachmentInput(this.input.runtime, text, attachments, this.input.attachments, log);
+				await session.steer(prompt.text, prompt.images);
+			},
+			followUp: async (text, attachments) => {
+				const prompt = await attachmentInput(this.input.runtime, text, attachments, this.input.attachments, log);
+				await session.followUp(prompt.text, prompt.images);
+			},
+		});
 		try {
 			if (mode === "continue") await session.agent.continue();
 			else {
@@ -166,6 +176,7 @@ export class PiAgent implements Agent {
 				await session.prompt(prompt.text, { expandPromptTemplates: false, images: prompt.images });
 			}
 		} finally {
+			req.onLiveSession?.(undefined);
 			req.signal?.removeEventListener("abort", abort);
 			unsub();
 		}
@@ -304,28 +315,18 @@ function sessionPath(root: string, path: string): string {
 }
 
 function appendToolResult(session: SessionManager, input: ToolContinuation): void {
-	const branch = toolCallEntryId(session, input.toolCallId);
-	if (!branch) throw new Error(`tool call not found in Pi session: ${input.toolCallId}`);
+	const branch = toolResultParentEntryId(session, input.toolCallId);
+	if (!branch) throw new Error(`synthetic tool result not found in Pi session: ${input.toolCallId}`);
 	session.branch(branch);
 	session.appendMessage(toolResult(input) as Parameters<SessionManager["appendMessage"]>[0]);
 }
 
-function toolCallEntryId(session: SessionManager, toolCallId: string): string | undefined {
+export function toolResultParentEntryId(session: SessionManager, toolCallId: string): string | undefined {
 	for (const entry of [...session.getEntries()].reverse()) {
 		if (entry.type !== "message") continue;
 		const message = entry.message;
-		if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
-		if (
-			message.content.some(
-				(part) =>
-					Boolean(part) &&
-					typeof part === "object" &&
-					(part as { type?: unknown }).type === "toolCall" &&
-					(part as { id?: unknown }).id === toolCallId,
-			)
-		) {
-			return entry.id;
-		}
+		if (message.role !== "toolResult" || message.toolCallId !== toolCallId) continue;
+		return entry.parentId ?? undefined;
 	}
 	return undefined;
 }

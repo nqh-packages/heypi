@@ -15,8 +15,11 @@ import {
 import { message as errorMessage, type Logger, userError } from "../core/log.js";
 import { chunkText } from "../render/chunk.js";
 import { type Attachment, type AttachmentStore, responseBytes } from "./attachments.js";
+import { runChatMessage } from "./chat-message.js";
 import { type DeliveryConfig, DeliveryQueue } from "./delivery.js";
+import { allowByDimensions, messageTriggered } from "./gate.js";
 import type { Adapter, AdapterStart, AdapterTarget, Outbound } from "./handler.js";
+import { logCtx } from "./log-context.js";
 import { DraftReplyStream, type ReplyStreamOption } from "./reply-stream.js";
 
 const APPROVE = "heypi_approve";
@@ -24,6 +27,7 @@ const DENY = "heypi_deny";
 const DISCORD_TEXT_LIMIT = 2000;
 
 export type DiscordConfig = {
+	name?: string;
 	token: string;
 	allow?: DiscordAllow;
 	trigger?: DiscordTrigger;
@@ -49,6 +53,8 @@ export type DiscordProgress = {
 
 /** Creates a Discord gateway adapter. Requires Message Content Intent for non-mention message text. */
 export function discord(input: DiscordConfig): Adapter {
+	const name = input.name ?? "discord";
+	const kind = "discord";
 	const client = new Client({
 		intents: [
 			GatewayIntentBits.Guilds,
@@ -62,23 +68,24 @@ export function discord(input: DiscordConfig): Adapter {
 	let delivery = new DeliveryQueue(input.delivery);
 
 	return {
-		name: "discord",
+		name,
+		kind,
 		async start(start: AdapterStart): Promise<void> {
 			activeLogger = start.logger;
 			delivery = new DeliveryQueue(input.delivery, start.logger);
-			start.logger.info("adapter.start", { adapter: "discord" });
+			start.logger.info("adapter.start", { adapter: name, kind });
 			client.on(Events.MessageCreate, (msg) => {
-				void handleMessage({ client, start, config: input, delivery, msg });
+				void handleMessage({ client, start, config: input, delivery, provider: name, kind, msg });
 			});
 			client.on(Events.InteractionCreate, (interaction) => {
-				void handleInteraction({ start, delivery, interaction });
+				void handleInteraction({ start, delivery, provider: name, kind, interaction });
 			});
 			await client.login(input.token);
 		},
 		async stop(): Promise<void> {
 			client.removeAllListeners();
 			client.destroy();
-			activeLogger?.info("adapter.stop", { adapter: "discord" });
+			activeLogger?.info("adapter.stop", { adapter: name, kind });
 		},
 		async send(target: AdapterTarget, out: Outbound, start?: AdapterStart): Promise<void> {
 			const log = start?.logger ?? activeLogger;
@@ -88,11 +95,12 @@ export function discord(input: DiscordConfig): Adapter {
 				store: start?.attachments,
 				out,
 				logger: log ?? noopLogger,
-				context: { adapter: "discord", channel: target.channel, user: target.user },
+				context: { adapter: name, kind, channel: target.channel, user: target.user },
 				delivery,
 			});
 			log?.debug("adapter.send", {
-				adapter: "discord",
+				adapter: name,
+				kind,
 				channel: target.channel,
 				user: target.user,
 				chars: out.text.length,
@@ -106,6 +114,8 @@ async function handleMessage(input: {
 	start: AdapterStart;
 	config: DiscordConfig;
 	delivery: DeliveryQueue;
+	provider: string;
+	kind: string;
 	msg: Message;
 }): Promise<void> {
 	const msg = input.msg;
@@ -115,9 +125,17 @@ async function handleMessage(input: {
 	const team = msg.guildId ?? undefined;
 	const trace = `discord:${msg.id}`;
 	const dm = isDm(msg);
+	const context = (extra?: Record<string, unknown>) =>
+		logCtx({ trace, adapter: input.provider, kind: input.kind, channel }, extra);
 	const allow = discordAllowed(input.config.allow, { guild: team, channel, user: actor, isDm: dm });
 	if (!allow.ok) {
-		input.start.logger.debug("adapter.drop", { trace, adapter: "discord", channel, actor, reason: allow.reason });
+		input.start.logger.debug(
+			"adapter.drop",
+			context({
+				actor,
+				reason: allow.reason,
+			}),
+		);
 		return;
 	}
 	const trigger = discordTriggered(input.config.trigger, {
@@ -128,7 +146,13 @@ async function handleMessage(input: {
 		threadTrigger: input.config.threadTrigger,
 	});
 	if (!trigger.ok) {
-		input.start.logger.debug("adapter.drop", { trace, adapter: "discord", channel, actor, reason: trigger.reason });
+		input.start.logger.debug(
+			"adapter.drop",
+			context({
+				actor,
+				reason: trigger.reason,
+			}),
+		);
 		return;
 	}
 	const streaming = streamingEnabled(input.config.streaming);
@@ -137,7 +161,7 @@ async function handleMessage(input: {
 		config: input.config.streaming,
 		message: msg,
 		logger: input.start.logger,
-		context: { trace, adapter: "discord", channel },
+		context: context(),
 		delivery: input.delivery,
 	});
 	const pending = startProgress({
@@ -145,19 +169,28 @@ async function handleMessage(input: {
 		progress,
 		cancelId: trace,
 		logger: input.start.logger,
-		context: { trace, adapter: "discord", channel },
+		context: context(),
 		delivery: input.delivery,
 	});
-	try {
-		const attachments = await discordAttachments({
-			store: input.start.attachments,
-			message: msg,
+	await runChatMessage({
+		logger: input.start.logger,
+		context,
+		handler: input.start.handler,
+		stream,
+		progress: pending,
+		loadAttachments: () =>
+			discordAttachments({
+				store: input.start.attachments,
+				message: msg,
+				trace,
+				provider: input.provider,
+				kind: input.kind,
+				logger: input.start.logger,
+			}),
+		inbound: () => ({
 			trace,
-			logger: input.start.logger,
-		});
-		const out = await input.start.handler({
-			trace,
-			provider: "discord",
+			provider: input.provider,
+			kind: input.kind,
 			eventId: msg.id,
 			team,
 			channel,
@@ -167,61 +200,72 @@ async function handleMessage(input: {
 			thread: threadKey(msg),
 			threadName: discordThreadName(msg.channel),
 			text: msg.content,
-			attachments,
 			data: {
 				guildId: msg.guildId,
 				channelId: msg.channelId,
 				messageId: msg.id,
 				attachments: msg.attachments.map((item) => ({ id: item.id, name: item.name, size: item.size })),
 			},
-			stream,
-		});
-		if (!out) return;
-		if (out.private) await stream?.clear?.();
-		if (stream?.complete?.() && !out.approval) {
-			await pending.stop();
-			await uploadDiscordAttachments({
+		}),
+		placement: {
+			fresh: async (out) => {
+				const target = out.private ? await msg.author.createDM() : msg.channel;
+				await sendDiscordOutput({
+					channel: target,
+					store: input.start.attachments,
+					out,
+					replyTo: out.private ? undefined : msg,
+					skipFirst: false,
+					logger: input.start.logger,
+					context: context(),
+					delivery: input.delivery,
+				});
+			},
+			streamed: async (out) => {
+				await uploadDiscordAttachments({
+					channel: msg.channel,
+					store: input.start.attachments,
+					attachments: out.attachments,
+					logger: input.start.logger,
+					context: context(),
+					delivery: input.delivery,
+				});
+			},
+			progress: async (out) => {
+				const edited = await pending.update(out);
+				const target = out.private ? await msg.author.createDM() : msg.channel;
+				await sendDiscordOutput({
+					channel: target,
+					store: input.start.attachments,
+					out,
+					replyTo: out.private ? undefined : msg,
+					skipFirst: edited,
+					logger: input.start.logger,
+					context: context(),
+					delivery: input.delivery,
+				});
+			},
+		},
+		sendError: async () => {
+			const text = userError("handler");
+			const edited = await pending.update({ text });
+			await sendTextChunks({
 				channel: msg.channel,
-				store: input.start.attachments,
-				attachments: out.attachments,
-				logger: input.start.logger,
-				context: { trace, adapter: "discord", channel },
+				text,
+				replyTo: msg,
+				skipFirst: edited,
+				context: context(),
 				delivery: input.delivery,
 			});
-			return;
-		}
-		const edited = await pending.update(out);
-		const target = out.private ? await msg.author.createDM() : msg.channel;
-		await sendDiscordOutput({
-			channel: target,
-			store: input.start.attachments,
-			out,
-			replyTo: out.private ? undefined : msg,
-			skipFirst: edited,
-			logger: input.start.logger,
-			context: { trace, adapter: "discord", channel },
-			delivery: input.delivery,
-		});
-	} catch (error) {
-		input.start.logger.error("adapter.error", { trace, adapter: "discord", channel, error: errorMessage(error) });
-		const text = userError("handler");
-		const edited = await pending.update({ text });
-		await sendTextChunks({
-			channel: msg.channel,
-			text,
-			replyTo: msg,
-			skipFirst: edited,
-			context: { trace, adapter: "discord", channel },
-			delivery: input.delivery,
-		});
-	} finally {
-		await pending.stop();
-	}
+		},
+	});
 }
 
 async function handleInteraction(input: {
 	start: AdapterStart;
 	delivery: DeliveryQueue;
+	provider: string;
+	kind: string;
 	interaction: Interaction;
 }): Promise<void> {
 	if (!input.interaction.isButton()) return;
@@ -232,6 +276,8 @@ async function handleInteraction(input: {
 	const channel = interaction.channelId ?? "unknown";
 	const team = interaction.guildId ?? undefined;
 	const actor = interaction.user.id;
+	const context = (extra?: Record<string, unknown>) =>
+		logCtx({ trace, adapter: input.provider, kind: input.kind, channel }, extra);
 	let acknowledged = false;
 	const acknowledge = async (text: string) => {
 		await interaction.editReply({
@@ -250,7 +296,8 @@ async function handleInteraction(input: {
 	try {
 		const out = await input.start.handler({
 			trace,
-			provider: "discord",
+			provider: input.provider,
+			kind: input.kind,
 			eventId: interaction.id,
 			team,
 			channel,
@@ -270,7 +317,7 @@ async function handleInteraction(input: {
 				store: input.start.attachments,
 				out,
 				logger: input.start.logger,
-				context: { trace, adapter: "discord", channel },
+				context: context(),
 				delivery: input.delivery,
 			});
 			return;
@@ -287,7 +334,7 @@ async function handleInteraction(input: {
 				out: rendered,
 				skipFirst: true,
 				logger: input.start.logger,
-				context: { trace, adapter: "discord", channel },
+				context: context(),
 				delivery: input.delivery,
 			});
 			return;
@@ -297,11 +344,16 @@ async function handleInteraction(input: {
 			store: input.start.attachments,
 			out: rendered,
 			logger: input.start.logger,
-			context: { trace, adapter: "discord", channel },
+			context: context(),
 			delivery: input.delivery,
 		});
 	} catch (error) {
-		input.start.logger.error("adapter.error", { trace, adapter: "discord", channel, error: errorMessage(error) });
+		input.start.logger.error(
+			"adapter.error",
+			context({
+				error: errorMessage(error),
+			}),
+		);
 		await interaction.followUp({ content: userError("handler"), ephemeral: true }).catch(() => undefined);
 	}
 }
@@ -412,7 +464,7 @@ function startProgress(input: {
 }) {
 	let id: string | undefined;
 	let timer: ReturnType<typeof setTimeout> | undefined;
-	const text = input.progress?.message === false ? undefined : (input.progress?.message ?? "Thinking...");
+	const text = input.progress?.message === false ? undefined : (input.progress?.message ?? "Working...");
 	if (text) {
 		timer = setTimeout(() => {
 			void input.delivery
@@ -463,6 +515,8 @@ async function discordAttachments(input: {
 	store?: AttachmentStore;
 	message: Message;
 	trace: string;
+	provider: string;
+	kind: string;
 	logger: Logger;
 }): Promise<Attachment[] | undefined> {
 	if (!input.store || input.message.attachments.size === 0) return undefined;
@@ -472,7 +526,8 @@ async function discordAttachments(input: {
 			if (input.store.maxBytes !== undefined && item.size > input.store.maxBytes) {
 				input.logger.warn("discord.attachment_too_large", {
 					trace: input.trace,
-					adapter: "discord",
+					adapter: input.provider,
+					kind: input.kind,
 					attachment: item.id,
 					size: item.size,
 					maxBytes: input.store.maxBytes,
@@ -485,7 +540,7 @@ async function discordAttachments(input: {
 			const data = await responseBytes(response, input.store.maxBytes);
 			attachments.push(
 				await input.store.save({
-					provider: "discord",
+					provider: input.provider,
 					messageId: input.message.id,
 					id: item.id,
 					name: item.name,
@@ -497,7 +552,8 @@ async function discordAttachments(input: {
 		} catch (error) {
 			input.logger.warn("discord.attachment_failed", {
 				trace: input.trace,
-				adapter: "discord",
+				adapter: input.provider,
+				kind: input.kind,
 				attachment: item.id,
 				error: errorMessage(error),
 			});
@@ -630,14 +686,16 @@ export function discordAllowed(
 	input: DiscordAllow | undefined,
 	event: { guild?: string; channel: string; user: string; isDm: boolean },
 ): { ok: true } | { ok: false; reason: string } {
-	if (event.isDm && input?.dms === false) return { ok: false, reason: "dm disabled" };
-	if (input?.guilds?.length && (!event.guild || !input.guilds.includes(event.guild))) {
-		return { ok: false, reason: "guild not allowed" };
-	}
-	if (input?.channels?.length && !input.channels.includes(event.channel))
-		return { ok: false, reason: "channel not allowed" };
-	if (input?.users?.length && !input.users.includes(event.user)) return { ok: false, reason: "user not allowed" };
-	return { ok: true };
+	return allowByDimensions({
+		dms: input?.dms,
+		isDm: event.isDm,
+		dmReason: "dm disabled",
+		dimensions: [
+			{ allowlist: input?.guilds, value: event.guild, reason: "guild not allowed" },
+			{ allowlist: input?.channels, value: event.channel, reason: "channel not allowed" },
+			{ allowlist: input?.users, value: event.user, reason: "user not allowed" },
+		],
+	});
 }
 
 export function discordTriggered(
@@ -650,11 +708,14 @@ export function discordTriggered(
 		threadTrigger?: DiscordTrigger | false;
 	},
 ): { ok: true } | { ok: false; reason: string } {
-	if (event.isDm) return { ok: true };
-	if ((input ?? "mention") === "message") return { ok: true };
-	if (event.thread && (event.threadTrigger ?? "message") === "message") return { ok: true };
-	if (event.mentioned) return { ok: true };
-	return { ok: false, reason: "mention required" };
+	return messageTriggered({
+		trigger: input,
+		isDm: event.isDm,
+		thread: event.thread,
+		threadTrigger: event.threadTrigger,
+		mentioned: event.mentioned,
+		reason: "mention required",
+	});
 }
 
 const noopLogger: Logger = {

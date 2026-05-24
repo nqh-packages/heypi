@@ -77,7 +77,11 @@ telegram({
 });
 ```
 
-`streaming` is off by default. Use `true` for sensible defaults, or pass `{ intervalMs, minChars, maxFailures }` to tune draft edits. Telegram progress defaults to an immediate `Thinking...` message when streaming is off. Progress messages are suppressed while streaming is active to avoid duplicate visible replies. Set `progress: false` to disable progress.
+`streaming` is off by default. Use `true` for sensible defaults, or pass `{ intervalMs, minChars, maxFailures }` to tune draft edits. Telegram progress defaults to an immediate `Working...` message when streaming is off. Progress messages are suppressed while streaming is active to avoid duplicate visible replies. Set `progress: false` to disable progress.
+
+Same-thread messages received while the bot is already working use the global `concurrency.busy` policy. The default is `steer`: Telegram receives a public topic/chat acknowledgement, the message is injected into the active Pi session, and the original `Working...` message stays in place until it is deleted at completion. The final answer is posted at the bottom of the thread. Use `followUp` to queue the message for after the active assistant response, or `reject` to ask the user to send it again later. Pending approvals reject new asks until the approval is resolved.
+
+Run cancellation is restricted to the user who started the run, plus configured `approval.approvers`. Unauthorized cancel clicks are shown as private callback alerts.
 
 Telegram delivery calls are serialized by default. Provider rate limits are retried with backoff. Ambiguous timeouts are not retried for non-idempotent sends such as new messages or file uploads. Most apps do not need to configure this. If Telegram needs slower pacing, set `delivery: { intervalMs: 500 }`; use `delivery: false` only for development or custom transport control.
 

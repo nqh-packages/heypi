@@ -30,6 +30,15 @@ export class LockRepo {
 		await this.db.delete(lock).where(and(eq(lock.key, input.key), eq(lock.owner, input.owner)));
 	}
 
+	async refresh(input: { key: string; owner: string; ttlMs?: number }): Promise<Lock | undefined> {
+		const now = Date.now();
+		await this.db
+			.update(lock)
+			.set({ expiresAt: now + (input.ttlMs ?? DEFAULT_TTL_MS), updatedAt: now })
+			.where(and(eq(lock.key, input.key), eq(lock.owner, input.owner)));
+		return this.getOwned(input.key, input.owner);
+	}
+
 	async clear(input: { prefix?: string } = {}): Promise<number> {
 		const rows = input.prefix
 			? await this.db

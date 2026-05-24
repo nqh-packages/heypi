@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "27c274c3-331d-4a5c-bf09-ed425dec4bd4",
+  "id": "18a9ee41-f085-4674-89d3-362e124c43c1",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "approval": {
@@ -566,6 +566,14 @@
           "notNull": true,
           "autoincrement": false
         },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "''"
+        },
         "provider_event_id": {
           "name": "provider_event_id",
           "type": "text",
@@ -662,6 +670,14 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "''"
         },
         "team": {
           "name": "team",
@@ -782,6 +798,14 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "''"
         },
         "channel": {
           "name": "channel",

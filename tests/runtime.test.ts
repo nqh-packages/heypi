@@ -9,6 +9,7 @@ import type { Confirm } from "../src/core/types.js";
 import { hostBash } from "../src/runtime/host-bash.js";
 import { createRuntime, runtimeName } from "../src/runtime/index.js";
 import { justBash } from "../src/runtime/just-bash.js";
+import { executeProcess } from "../src/runtime/shell.js";
 import { tools } from "../src/runtime/tools.js";
 import type { Runtime } from "../src/runtime/types.js";
 import type { HistoryMessage, Message, Messages } from "../src/store/types.js";
@@ -113,6 +114,40 @@ test("host-bash uses a minimal environment unless hostEnv is configured", async 
 	} finally {
 		if (previous === undefined) delete process.env.HEYPI_SECRET_TEST;
 		else process.env.HEYPI_SECRET_TEST = previous;
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("host-bash does not source host shell startup files", async () => {
+	const root = await temp();
+	const home = await temp();
+	try {
+		await writeFile(join(home, ".bash_profile"), "export HEYPI_RC_FILE_LOADED=yes\n", "utf8");
+		const runtime = hostBash({ root, env: { HOME: home } });
+		const result = await runtime.bash?.({ command: "printenv HEYPI_RC_FILE_LOADED || true" });
+
+		assert.equal(result?.code, 0);
+		assert.equal(result?.out, "");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+		await rm(home, { recursive: true, force: true });
+	}
+});
+
+test("process execution kills commands that exceed the stream output cap", async () => {
+	const root = await temp();
+	try {
+		const result = await executeProcess(process.execPath, ["-e", "process.stdout.write('x'.repeat(300000));"], {
+			cwd: root,
+			timeoutMs: 10_000,
+			env: { PATH: process.env.PATH ?? "" },
+		});
+
+		assert.equal(result.code, 125);
+		assert.ok(result.out.length <= 64 * 1024 + "...[truncated]\n".length);
+		assert.match(result.out, /truncated/);
+		assert.match(result.err, /output exceeded/);
+	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
 });

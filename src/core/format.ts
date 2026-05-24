@@ -139,7 +139,7 @@ export function renderCall(input: {
 	if (input.state === "unauthorized") {
 		return {
 			text: [
-				"You are not allowed to approve this action.",
+				"You are not allowed to resolve this action.",
 				input.approvers?.length ? `Allowed approvers: ${input.approvers.join(", ")}` : undefined,
 			]
 				.filter((line): line is string => typeof line === "string")

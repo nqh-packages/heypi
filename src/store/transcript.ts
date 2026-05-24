@@ -19,6 +19,7 @@ export type SaveInput = {
 	store: Store;
 	threadId: string;
 	provider: string;
+	kind?: string;
 	reply: Reply;
 };
 
@@ -45,6 +46,7 @@ export async function saveReply(input: SaveInput): Promise<Message> {
 	return await input.store.messages.create({
 		threadId: input.threadId,
 		provider: input.provider,
+		kind: input.kind ?? input.provider,
 		role: "assistant",
 		actor: "heypi",
 		text: input.reply.text,

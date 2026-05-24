@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Adapter, AdapterStart, Handler, Outbound } from "../io/handler.js";
 import type { JobConfig, JobSchedule, JobScope, JobTarget } from "../job.js";
+import { transaction } from "../store/transaction.js";
 import type { DeliveryState, Job, JobRunState, SchedulerStore, Store, Thread } from "../store/types.js";
 import type { Logger } from "./log.js";
 import { message as errorMessage } from "./log.js";
@@ -280,8 +281,4 @@ function targetThread(thread: Thread): string | undefined {
 function parseJson<T>(input?: string): T | undefined {
 	if (!input) return undefined;
 	return JSON.parse(input) as T;
-}
-
-async function transaction<T>(store: Store, fn: (store: Store) => Promise<T>): Promise<T> {
-	return store.transaction ? store.transaction(fn) : fn(store);
 }

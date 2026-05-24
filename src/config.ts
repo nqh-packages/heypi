@@ -110,6 +110,25 @@ export type ApprovalConfig = {
 	expiresInMs?: number;
 };
 
+export type BusyBehavior = "reject" | "followUp" | "steer";
+
+export type ConcurrencyMessages = {
+	busyReject: string;
+	busyFollowUp: string;
+	busySteer: string;
+	pendingApprovalReject: string;
+};
+
+export type ConcurrencyConfig = {
+	busy?: BusyBehavior;
+	messages?: Partial<ConcurrencyMessages>;
+};
+
+export type AppLockConfig = {
+	ttlMs?: number;
+	drainMs?: number;
+};
+
 export type HeypiConfig = {
 	store: Store;
 	adapters: Adapter[];
@@ -117,6 +136,8 @@ export type HeypiConfig = {
 	runtime: RuntimeConfig;
 	attachments?: AttachmentConfig;
 	approval?: ApprovalConfig;
+	concurrency?: ConcurrencyConfig;
+	appLock?: false | AppLockConfig;
 	scheduler?: Omit<SchedulerConfig, "jobs">;
 	jobs?: SchedulerConfig["jobs"];
 	logger?: Logger;

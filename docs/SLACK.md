@@ -89,7 +89,7 @@ slack({
 });
 ```
 
-HTTP mode starts Bolt's Node HTTP receiver inside the heypi process. It is for normal hosted Node services.
+HTTP mode registers Bolt's receiver on heypi's shared Node HTTP listener. It is for normal hosted Node services. If you run multiple Slack HTTP adapters in one app, give each adapter a unique `name` and `path`.
 
 Generate a starter manifest:
 
@@ -157,7 +157,11 @@ slack({
 
 `streaming` is off by default. Use `true` for sensible defaults, or pass `{ intervalMs, minChars, maxFailures }` to tune draft edits. Slack still posts the configured progress message immediately and deletes or replaces it when the final reply is ready.
 
-Slack progress defaults to an immediate `Thinking...` message. Top-level channel messages also get an `eyes` reaction. Thread replies, DMs, and approval continuations do not get the reaction. Set `progress: false` to disable progress, or pass `progress: { message: false }` to keep only the reaction where reactions apply.
+Slack progress defaults to an immediate `Working...` message. Top-level channel messages also get an `eyes` reaction. Thread replies, DMs, and approval continuations do not get the reaction. Set `progress: false` to disable progress, or pass `progress: { message: false }` to keep only the reaction where reactions apply.
+
+Same-thread messages received while the bot is already working use the global `concurrency.busy` policy. The default is `steer`: Slack receives a public thread acknowledgement, the message is injected into the active Pi session, and the original `Working...` message stays in place until it is deleted at completion. The final answer is posted at the bottom of the thread. Use `followUp` to queue the message for after the active assistant response, or `reject` to ask the user to send it again later. Pending approvals reject new asks until the approval is resolved.
+
+Run cancellation is restricted to the user who started the run, plus configured `approval.approvers`. Unauthorized cancel clicks receive a private reply in the thread.
 
 Slack delivery calls are serialized by default. Provider rate limits are retried with backoff. Ambiguous timeouts are not retried for non-idempotent sends such as new messages or file uploads. Most apps do not need to configure this. If Slack needs slower pacing, set `delivery: { intervalMs: 500 }`; use `delivery: false` only for development or custom transport control.
 
@@ -169,7 +173,7 @@ Approval cards use Slack buttons. When an approver clicks **Approve**, heypi upd
 ✅ Approval `approval-id` approved by <@U123>.
 ```
 
-If the approved command or tool continues running, Slack posts a follow-up `Thinking...` progress message in the same thread and replaces it with the result. Rejections also keep the approval details visible and remove the buttons:
+If the approved command or tool continues running, Slack posts a follow-up `Working...` progress message in the same thread and replaces it with the result. Rejections also keep the approval details visible and remove the buttons:
 
 ```text
 ⛔ Approval `approval-id` rejected by <@U123>.

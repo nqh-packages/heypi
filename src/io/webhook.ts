@@ -29,6 +29,7 @@ export type WebhookMessage = {
 /** Creates an HTTP webhook adapter for generic, async-first integrations. */
 export function webhook(config: WebhookConfig): Adapter {
 	const name = config.name ?? "webhook";
+	const kind = "webhook";
 	const base = normalizePath(config.path ?? "/webhook");
 	const host = config.host ?? "127.0.0.1";
 	const maxBodyBytes = config.maxBodyBytes ?? 1_000_000;
@@ -39,27 +40,40 @@ export function webhook(config: WebhookConfig): Adapter {
 
 	return {
 		name,
+		kind,
 		async start(input) {
 			start = input;
-			server = createServer(
-				(req, res) =>
-					void route({
-						req,
-						res,
-						config,
-						base,
-						name,
-						start: input,
-						maxBodyBytes,
-						maxInFlight,
-						inFlight: () => inFlight++,
-					}),
-			);
+			const handler = (req: IncomingMessage, res: ServerResponse) =>
+				route({
+					req,
+					res,
+					config,
+					base,
+					name,
+					kind,
+					start: input,
+					maxBodyBytes,
+					maxInFlight,
+					inFlight: () => inFlight++,
+				});
+			if (input.http) {
+				registerWebhookRoutes(input, { base, host, port: config.port, handler });
+				input.logger.info("webhook.start", {
+					adapter: name,
+					kind,
+					host,
+					port: config.port,
+					path: base,
+					shared: true,
+				});
+				return;
+			}
+			server = createServer((req, res) => void handler(req, res));
 			await new Promise<void>((resolve, reject) => {
 				server?.once("error", reject);
 				server?.listen(config.port, host, () => {
 					server?.off("error", reject);
-					input.logger.info("webhook.start", { adapter: name, host, port: config.port, path: base });
+					input.logger.info("webhook.start", { adapter: name, kind, host, port: config.port, path: base });
 					resolve();
 				});
 			});
@@ -69,7 +83,7 @@ export function webhook(config: WebhookConfig): Adapter {
 				if (!server) return resolve();
 				server.close((error) => (error ? reject(error) : resolve()));
 			});
-			start?.logger.info("webhook.stop", { adapter: name });
+			start?.logger.info("webhook.stop", { adapter: name, kind });
 			server = undefined;
 			start = undefined;
 		},
@@ -84,12 +98,39 @@ export function webhook(config: WebhookConfig): Adapter {
 	}
 }
 
+function registerWebhookRoutes(
+	start: AdapterStart,
+	input: {
+		base: string;
+		host: string;
+		port: number;
+		handler(req: IncomingMessage, res: ServerResponse): Promise<void>;
+	},
+): void {
+	const routes = [
+		["POST", input.base],
+		["POST", `${input.base}/messages`],
+		["POST", `${input.base}/threads/:threadId/messages`],
+		["GET", `${input.base}/threads/:threadId/runs/:runId`],
+	] as const;
+	for (const [method, path] of routes) {
+		start.http?.register({
+			method,
+			path,
+			host: input.host,
+			port: input.port,
+			handler: input.handler,
+		});
+	}
+}
+
 type RouteInput = {
 	req: IncomingMessage;
 	res: ServerResponse;
 	config: WebhookConfig;
 	base: string;
 	name: string;
+	kind: string;
 	start: AdapterStart;
 	maxBodyBytes: number;
 	maxInFlight: number;
@@ -130,6 +171,7 @@ async function receive(
 	input: {
 		res: ServerResponse;
 		name: string;
+		kind: string;
 		start: AdapterStart;
 		config: WebhookConfig;
 		maxInFlight: number;
@@ -158,7 +200,7 @@ async function receive(
 }
 
 async function execute(
-	input: { name: string; start: AdapterStart },
+	input: { name: string; kind: string; start: AdapterStart },
 	payload: WebhookMessage,
 	threadId: string,
 	runId: string,
@@ -166,6 +208,7 @@ async function execute(
 	try {
 		const result = await input.start.handler({
 			provider: input.name,
+			kind: input.kind,
 			eventId: payload.eventId ?? runId,
 			channel: threadId,
 			actor: payload.user ?? "webhook",

@@ -7,6 +7,10 @@ export {
 	type ApprovalConfig,
 	type AttachmentConfig,
 	agentFrom,
+	type AppLockConfig,
+	type BusyBehavior,
+	type ConcurrencyConfig,
+	type ConcurrencyMessages,
 	type DockerConfig,
 	type HeypiConfig,
 	type JustBashConfig,
@@ -45,7 +49,17 @@ export {
 	type DiscordTrigger,
 	discord,
 } from "./io/discord.js";
-export type { Adapter, AdapterTarget, Handler, Inbound, Outbound, Status, StatusResult } from "./io/handler.js";
+export type {
+	Adapter,
+	AdapterTarget,
+	Handler,
+	HttpRegistrar,
+	HttpRoute,
+	Inbound,
+	Outbound,
+	Status,
+	StatusResult,
+} from "./io/handler.js";
 export type { ReplyStream, ReplyStreamConfig, ReplyStreamOption } from "./io/reply-stream.js";
 export {
 	type SlackAllow,

@@ -22,6 +22,20 @@ test("ActiveRuns cancels all aliases for a run", () => {
 	assert.equal(active.cancel("turn-1"), "not_found");
 });
 
+test("ActiveRuns drains active runs and aborts survivors", async () => {
+	const active = new ActiveRuns();
+	const run = active.start(["trace-1"]);
+
+	assert.equal(active.count(), 1);
+	assert.equal(await active.drain(1), false);
+	assert.equal(active.abortAll(), 1);
+	assert.equal(run.signal.aborted, true);
+	assert.equal(active.count(), 1);
+	run.stop();
+	assert.equal(await active.drain(1), true);
+	assert.equal(active.count(), 0);
+});
+
 test("Queue rejects pending jobs immediately when cancelled", async () => {
 	const queue = new Queue({ maxConcurrent: 1, maxPerChat: 1 });
 	let release: (() => void) | undefined;

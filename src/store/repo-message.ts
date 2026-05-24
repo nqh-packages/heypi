@@ -12,6 +12,7 @@ export class MessageRepo {
 	async create(input: {
 		threadId: string;
 		provider: string;
+		kind?: string;
 		providerEventId?: string;
 		role: string;
 		actor?: string;
@@ -26,6 +27,7 @@ export class MessageRepo {
 	async createOnce(input: {
 		threadId: string;
 		provider: string;
+		kind?: string;
 		providerEventId?: string;
 		role: string;
 		actor?: string;
@@ -47,6 +49,7 @@ export class MessageRepo {
 				id,
 				threadId: input.threadId,
 				provider: input.provider,
+				kind: input.kind ?? input.provider,
 				providerEventId: input.providerEventId,
 				role: input.role,
 				actor: input.actor,

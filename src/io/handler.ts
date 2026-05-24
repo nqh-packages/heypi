@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ApprovalConfig, ModelConfig } from "../config.js";
+import type { ApprovalConfig, ConcurrencyConfig, ConcurrencyMessages, ModelConfig } from "../config.js";
 import { ActiveRuns, cancelReply, isAbortError } from "../core/active.js";
 import type { CallRunner } from "../core/calls.js";
 import { helpReply, renderApprovals, renderThreadStatus } from "../core/format.js";
@@ -7,6 +7,7 @@ import { normalizeText, parseIntent } from "../core/intent.js";
 import { type Logger, logError, logger, message, redact, userError } from "../core/log.js";
 import type { ApprovalPrompt, Intent, ReplyAttachment } from "../core/types.js";
 import type { Agent } from "../runtime/agent.js";
+import { transaction } from "../store/transaction.js";
 import { continueTool, saveReply } from "../store/transcript.js";
 import type { Store } from "../store/types.js";
 import { type Attachment, type AttachmentStore, attachmentPrompt } from "./attachments.js";
@@ -15,6 +16,7 @@ import type { ReplyStream } from "./reply-stream.js";
 export type Inbound = {
 	trace?: string;
 	provider: string;
+	kind?: string;
 	eventId?: string;
 	team?: string;
 	channel: string;
@@ -39,6 +41,7 @@ export type Outbound = {
 	silent?: boolean;
 	approval?: ApprovalPrompt;
 	attachments?: ReplyAttachment[];
+	finalPlacement?: "progress" | "thread";
 };
 
 export type Handler = (input: Inbound) => Promise<Outbound | undefined>;
@@ -67,15 +70,29 @@ export type AdapterStart = {
 	status?: Status;
 	logger: Logger;
 	attachments?: AttachmentStore;
+	http?: HttpRegistrar;
 };
 
 /** Messaging platform boundary. Adapters translate provider events into `Inbound` messages. */
 export interface Adapter {
-	name?: string;
+	name: string;
+	kind: string;
 	start(input: AdapterStart): Promise<void>;
 	send?(target: AdapterTarget, out: Outbound, input?: AdapterStart): Promise<void>;
 	stop?(): Promise<void>;
 }
+
+export type HttpRoute = {
+	method?: string;
+	path: string;
+	host?: string;
+	port?: number | string;
+	handler(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): void | Promise<void>;
+};
+
+export type HttpRegistrar = {
+	register(route: HttpRoute): void;
+};
 
 export type AdapterTarget = {
 	adapter?: string;
@@ -85,6 +102,17 @@ export type AdapterTarget = {
 	mode?: "channel" | "thread" | "dm";
 };
 
+type HandlerBase = {
+	trace: string;
+	agent: string;
+	provider: string;
+	channel: string;
+	thread: string;
+	turn: string;
+	message: string;
+	actor: string;
+};
+
 /** Creates the provider-neutral handler shared by Slack, Telegram, and future adapters. */
 export function createHandler(input: {
 	agentId?: string;
@@ -92,6 +120,7 @@ export function createHandler(input: {
 	callRunner: CallRunner;
 	agent: Agent;
 	approval?: ApprovalConfig;
+	concurrency?: ConcurrencyConfig;
 	active?: ActiveRuns;
 	lockMs?: number;
 	logger?: Logger;
@@ -99,6 +128,7 @@ export function createHandler(input: {
 	const agentId = input.agentId ?? "default";
 	const log = input.logger ?? logger;
 	const active = input.active ?? new ActiveRuns();
+	const concurrency = normalizeConcurrency(input.concurrency);
 	return async (msg) => {
 		const trace = msg.trace ?? randomUUID();
 		const rawText = normalizeText(msg.text);
@@ -113,7 +143,6 @@ export function createHandler(input: {
 			event: msg.eventId,
 		});
 		const intent = parseIntent({ text: rawText || text, channel: msg.channel, actor: msg.actor });
-		if (intent.kind === "cancel") return cancelReply(active.cancel(intent.id));
 		const messageText = intent.kind === "ask" ? text : rawText;
 		const scheduled = msg.scheduled === true;
 		const stream = intent.kind === "ask" ? msg.stream : undefined;
@@ -121,6 +150,7 @@ export function createHandler(input: {
 		const thread = await input.store.threads.getOrCreate({
 			agent: agentId,
 			provider: msg.provider,
+			kind: msg.kind ?? msg.provider,
 			team: msg.team,
 			channel: msg.channel,
 			actor: msg.actor,
@@ -128,6 +158,12 @@ export function createHandler(input: {
 		});
 		const lockKey = `thread:${thread.id}`;
 		const lockOwner = `${trace}:${randomUUID()}`;
+		if (intent.kind === "cancel") {
+			const target = active.info(intent.id);
+			if (!target || target.threadId !== thread.id) return cancelReply("not_found");
+			if (!canCancelRun(input.approval, msg.actor, target.actor)) return cancelReply("unauthorized");
+			return cancelReply(active.cancel(intent.id));
+		}
 		if (intent.kind === "approvals") {
 			if (!canListApprovals(input.approval, msg.actor)) {
 				return { text: "You are not allowed to view pending approvals.", private: true };
@@ -167,27 +203,55 @@ export function createHandler(input: {
 				thread: msg.thread,
 				event: msg.eventId,
 			});
-			return { text: "A turn is already running for this thread. Try again when it finishes.", private: true };
+			if (intent.kind === "ask" && concurrency.busy !== "reject" && active.has(lockKey)) {
+				const created = await input.store.messages.createOnce({
+					threadId: thread.id,
+					provider: msg.provider,
+					kind: msg.kind ?? msg.provider,
+					providerEventId: msg.eventId,
+					role: "user",
+					actor: msg.actor,
+					text: messageText,
+					data: JSON.stringify(data(msg.data, trace, msg.attachments, msg.model)),
+					state: "done",
+				});
+				if (!created.inserted) return undefined;
+				const queued = await active.enqueue(
+					lockKey,
+					concurrency.busy,
+					attributedMessage(msg, messageText),
+					msg.attachments,
+				);
+				if (queued === "queued") {
+					const key = concurrency.busy === "steer" ? "busySteer" : "busyFollowUp";
+					return { text: concurrency.messages[key], finalPlacement: "thread" };
+				}
+			}
+			return { text: concurrency.messages.busyReject, finalPlacement: "thread" };
 		}
 		let turn: Awaited<ReturnType<Store["turns"]["create"]>> | undefined;
 		let run: ReturnType<ActiveRuns["start"]> | undefined;
-		let base:
-			| {
-					trace: string;
-					agent: string;
-					provider: string;
-					channel: string;
-					thread: string;
-					turn: string;
-					message: string;
-					actor: string;
-			  }
-			| undefined;
+		let base: HandlerBase | undefined;
 		try {
+			if (intent.kind === "ask") {
+				const pending = (await input.store.approvals.listPending({ threadId: thread.id, limit: 1 }))[0];
+				if (pending) {
+					log.debug("handler.pending_approval", {
+						trace,
+						agent: agentId,
+						provider: msg.provider,
+						channel: msg.channel,
+						thread: thread.id,
+						approval: pending.id,
+					});
+					return { text: concurrency.messages.pendingApprovalReject, finalPlacement: "thread" };
+				}
+			}
 			const created = await transaction(input.store, async (store) => {
 				const inbound = await store.messages.createOnce({
 					threadId: thread.id,
 					provider: msg.provider,
+					kind: msg.kind ?? msg.provider,
 					providerEventId: msg.eventId,
 					role: "user",
 					actor: msg.actor,
@@ -201,6 +265,7 @@ export function createHandler(input: {
 					inputMessageId: inbound.row.id,
 					agent: agentId,
 					provider: msg.provider,
+					kind: msg.kind ?? msg.provider,
 					channel: msg.channel,
 					actor: msg.actor,
 					trace,
@@ -234,7 +299,7 @@ export function createHandler(input: {
 
 			log.debug("handler.intent", { ...base, kind: intent.kind });
 			const currentTurn = turn;
-			run = active.start([trace, currentTurn.id]);
+			run = active.start([trace, currentTurn.id, lockKey], { actor: msg.actor, threadId: thread.id });
 			const currentRun = run;
 			let reply =
 				intent.kind === "help"
@@ -259,6 +324,10 @@ export function createHandler(input: {
 								attachments: msg.attachments,
 								signal: currentRun.signal,
 								stream,
+								onLiveSession: (session) => {
+									if (session) currentRun.attach(session);
+									else currentRun.detach();
+								},
 							})
 						: await input.callRunner.handle(
 								scopedIntent(intent as CallIntent, msg),
@@ -283,64 +352,42 @@ export function createHandler(input: {
 				});
 			}
 			if (reply.silent) {
-				await stream?.stop();
-				// Silent replies intentionally finish the turn without adding a transcript message.
-				await transaction(input.store, async (store) => {
-					await store.turns.finish(currentTurn.id, {
-						state: currentRun.signal.aborted ? "cancelled" : "done",
-					});
+				return await finishSilentTurn({
+					store: input.store,
+					turn: currentTurn.id,
+					aborted: currentRun.signal.aborted,
+					stream,
+					scheduled,
+					base,
+					logger: log,
 				});
-				log.debug("handler.reply", {
-					...base,
-					actor: "heypi",
-					chars: 0,
-					silent: true,
-				});
-				return scheduled ? { text: "", silent: true } : undefined;
 			}
-			if (reply.approval) await stream?.stop();
-			else await stream?.finalize(redact(reply.text));
-			await transaction(input.store, async (store) => {
-				const result = await saveReply({
-					store,
-					threadId: targetThreadId ?? thread.id,
-					provider: msg.provider,
-					reply,
-				});
-				await store.turns.finish(currentTurn.id, {
-					state: currentRun.signal.aborted ? "cancelled" : "done",
-					resultMessageId: result.id,
-				});
+			const finalPlacement = currentRun.additions() > 0 ? "thread" : "progress";
+			return await finishReplyTurn({
+				store: input.store,
+				turn: currentTurn.id,
+				threadId: targetThreadId ?? thread.id,
+				provider: msg.provider,
+				kind: msg.kind ?? msg.provider,
+				reply,
+				aborted: currentRun.signal.aborted,
+				stream,
+				finalPlacement,
+				base,
+				logger: log,
 			});
-			log.debug("handler.reply", {
-				...base,
-				actor: "heypi",
-				chars: reply.text.length,
-			});
-			return {
-				text: redact(reply.text),
-				private: reply.private,
-				silent: reply.silent,
-				approval: reply.approval,
-				attachments: reply.attachments,
-			};
 		} catch (error) {
 			if ((run?.signal.aborted || isAbortError(error)) && turn) {
 				await stream?.stop();
-				const currentTurn = turn;
-				const reply = "cancelled";
-				await transaction(input.store, async (store) => {
-					const result = await store.messages.create({
-						threadId: thread.id,
-						provider: msg.provider,
-						role: "system",
-						actor: "heypi",
-						text: reply,
-						state: "cancelled",
-					});
-					await store.turns.finish(currentTurn.id, { state: "cancelled", resultMessageId: result.id });
+				return await finishSystemTurn({
+					store: input.store,
+					turn: turn.id,
+					threadId: thread.id,
+					provider: msg.provider,
+					kind: msg.kind ?? msg.provider,
+					text: "cancelled",
+					state: "cancelled",
 				});
-				return { text: redact(reply) };
 			}
 			await stream?.stop();
 			logError(log, "handler", {
@@ -354,22 +401,18 @@ export function createHandler(input: {
 				}),
 				error: message(error),
 			});
-			const reply = userError("handler");
-			await transaction(input.store, async (store) => {
-				const result = await store.messages.create({
-					threadId: thread.id,
-					provider: msg.provider,
-					role: "system",
-					actor: "heypi",
-					text: reply,
-					state: "failed",
-				});
-				if (turn) await store.turns.finish(turn.id, { state: "failed", resultMessageId: result.id });
+			return await finishSystemTurn({
+				store: input.store,
+				turn: turn?.id,
+				threadId: thread.id,
+				provider: msg.provider,
+				kind: msg.kind ?? msg.provider,
+				text: userError("handler"),
+				state: "failed",
 			});
-			return { text: redact(reply) };
 		} finally {
-			run?.stop();
 			if (lock) await input.store.locks?.release({ key: lockKey, owner: lockOwner });
+			run?.stop();
 		}
 	};
 }
@@ -406,8 +449,102 @@ export function createStatus(input: { agentId?: string; store: Store }): Status 
 	};
 }
 
-async function transaction<T>(store: Store, fn: (store: Store) => Promise<T>): Promise<T> {
-	return store.transaction ? store.transaction(fn) : fn(store);
+async function finishSilentTurn(input: {
+	store: Store;
+	turn: string;
+	aborted: boolean;
+	stream?: ReplyStream;
+	scheduled: boolean;
+	base: HandlerBase;
+	logger: Logger;
+}): Promise<Outbound | undefined> {
+	await input.stream?.stop();
+	// Silent replies intentionally finish the turn without adding a transcript message.
+	await transaction(input.store, async (store) => {
+		await store.turns.finish(input.turn, {
+			state: input.aborted ? "cancelled" : "done",
+		});
+	});
+	input.logger.debug("handler.reply", {
+		...input.base,
+		actor: "heypi",
+		chars: 0,
+		silent: true,
+	});
+	return input.scheduled ? { text: "", silent: true } : undefined;
+}
+
+async function finishReplyTurn(input: {
+	store: Store;
+	turn: string;
+	threadId: string;
+	provider: string;
+	kind: string;
+	reply: {
+		text: string;
+		private?: boolean;
+		silent?: boolean;
+		approval?: ApprovalPrompt;
+		attachments?: ReplyAttachment[];
+	};
+	aborted: boolean;
+	stream?: ReplyStream;
+	finalPlacement: NonNullable<Outbound["finalPlacement"]>;
+	base: HandlerBase;
+	logger: Logger;
+}): Promise<Outbound> {
+	if (input.reply.approval || input.finalPlacement === "thread") await input.stream?.stop();
+	else await input.stream?.finalize(redact(input.reply.text));
+	await transaction(input.store, async (store) => {
+		const result = await saveReply({
+			store,
+			threadId: input.threadId,
+			provider: input.provider,
+			kind: input.kind,
+			reply: input.reply,
+		});
+		await store.turns.finish(input.turn, {
+			state: input.aborted ? "cancelled" : "done",
+			resultMessageId: result.id,
+		});
+	});
+	input.logger.debug("handler.reply", {
+		...input.base,
+		actor: "heypi",
+		chars: input.reply.text.length,
+	});
+	return {
+		text: redact(input.reply.text),
+		private: input.reply.private,
+		silent: input.reply.silent,
+		approval: input.reply.approval,
+		attachments: input.reply.attachments,
+		finalPlacement: input.finalPlacement,
+	};
+}
+
+async function finishSystemTurn(input: {
+	store: Store;
+	turn?: string;
+	threadId: string;
+	provider: string;
+	kind: string;
+	text: string;
+	state: "cancelled" | "failed";
+}): Promise<Outbound> {
+	await transaction(input.store, async (store) => {
+		const result = await store.messages.create({
+			threadId: input.threadId,
+			provider: input.provider,
+			kind: input.kind,
+			role: "system",
+			actor: "heypi",
+			text: input.text,
+			state: input.state,
+		});
+		if (input.turn) await store.turns.finish(input.turn, { state: input.state, resultMessageId: result.id });
+	});
+	return { text: redact(input.text) };
 }
 
 function requiresThreadLock(kind: string): boolean {
@@ -434,6 +571,10 @@ function canListApprovals(config: ApprovalConfig | undefined, actor: string): bo
 	return approvers.length === 0 || approvers.includes(actor);
 }
 
+function canCancelRun(config: ApprovalConfig | undefined, actor: string, initiator?: string): boolean {
+	return actor === initiator || (config?.approvers ?? []).includes(actor);
+}
+
 function approvalVisible(
 	row: { channel: string; threadId: string | null },
 	config: ApprovalConfig | undefined,
@@ -443,6 +584,27 @@ function approvalVisible(
 	const approvers = config?.approvers ?? [];
 	if (!approvers.length) return row.threadId === threadId;
 	return row.channel.startsWith(`${msg.provider}:${msg.team ?? ""}:`);
+}
+
+type NormalizedConcurrency = Required<Omit<ConcurrencyConfig, "messages">> & { messages: ConcurrencyMessages };
+
+const DEFAULT_CONCURRENCY_MESSAGES: ConcurrencyMessages = {
+	busyReject: "I'm still working on the previous message. Send this again after I reply, or use `cancel`.",
+	busyFollowUp: "Got it. I'll handle that next.",
+	busySteer: "Got it. I'll include that.",
+	pendingApprovalReject: "I'm waiting for the pending approval first.",
+};
+
+function normalizeConcurrency(input: ConcurrencyConfig | undefined): NormalizedConcurrency {
+	return {
+		busy: input?.busy ?? "steer",
+		messages: { ...DEFAULT_CONCURRENCY_MESSAGES, ...(input?.messages ?? {}) },
+	};
+}
+
+function attributedMessage(msg: Pick<Inbound, "actor" | "actorName">, text: string): string {
+	const actor = msg.actorName && msg.actorName !== msg.actor ? `${msg.actorName} (${msg.actor})` : msg.actor;
+	return `[Message from ${actor}]\n${text}`;
 }
 
 function data(input: unknown, trace: string, attachments?: Attachment[], model?: ModelConfig): Record<string, unknown> {

@@ -14,9 +14,11 @@ webhook({
 });
 ```
 
-Webhook uses Node's HTTP server. It is not a Cloudflare Workers or Fetch adapter.
+Webhook registers routes on heypi's shared Node HTTP listener when it runs inside `createHeypi()`. Used directly, it starts its own Node HTTP server. It is not a Cloudflare Workers or Fetch adapter.
 
 By default, webhook binds to `127.0.0.1`. Set `host: "0.0.0.0"` only when an external proxy, gateway, or firewall is meant to expose it.
+
+If you run multiple webhook adapters in one app, give each adapter a unique `name` and `path`.
 
 Webhook is inbound-only. It does not implement adapter `send()`, so scheduled jobs cannot target webhook adapters.
 
@@ -138,6 +140,8 @@ status
 status <call-id>
 cancel <turn-id-or-trace>
 ```
+
+Cancel requests are accepted only from the webhook `user` that started the active run, plus configured `approval.approvers`.
 
 When a turn is waiting for approval, the run response includes structured approval data:
 

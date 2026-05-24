@@ -203,11 +203,27 @@ Slack, Telegram, and Discord also render provider-native buttons. Approval cards
 
 The `approvals` chat command lists pending approvals. If `approval.approvers` is configured, only those actors can use it; otherwise it lists pending approvals in the current thread only.
 
+`cancel <turn-id-or-trace>` is limited to the actor who started the active run, plus configured `approval.approvers`. Without configured approvers, only the run initiator can cancel.
+
 See [`docs/EXTENDING.md`](docs/EXTENDING.md) for custom tools, confirmation, and command risk classification.
 
 ## Adapters
 
 Slack, Telegram, and Discord adapters handle inbound messages, provider-native approval buttons, progress updates, and outbound attachments.
+
+Each adapter instance has a unique `name` and a fixed implementation `kind`. Built-in adapters default to `name === kind` (`slack`, `telegram`, `discord`, `webhook`). If you run more than one instance of the same adapter kind, give each one a unique name:
+
+```ts
+adapters: [
+	slack({ name: "slack-work", mode: "http", path: "/slack/work/events", /* ... */ }),
+	slack({ name: "slack-oss", mode: "http", path: "/slack/oss/events", /* ... */ }),
+	webhook({ name: "webhook-ci", path: "/webhook/ci", /* ... */ }),
+];
+```
+
+The adapter `name` is stored as the DB `provider` and is used for thread identity and scheduled delivery. The adapter `kind` is stored separately so you can still query by implementation type. Adapter names must be unique; duplicate names fail startup.
+
+HTTP adapters share one Node HTTP listener inside a `createHeypi()` app. All HTTP adapter routes in one app must use the same host/port, and duplicate `method + path` routes fail startup. Use distinct paths when running multiple HTTP adapters of the same kind.
 
 ### Slack
 
@@ -250,12 +266,12 @@ In Slack app settings:
 - Socket Mode: enable Socket Mode and create an app-level token with `connections:write`.
 - HTTP mode: set Event Subscriptions and Interactivity URLs to `https://<host>/slack/events`, or to the custom `path` you configured.
 
-All Slack modes use the same bot token, message handling, approvals, and reply behavior. HTTP mode starts Bolt's built-in Node HTTP receiver.
+All Slack modes use the same bot token, message handling, approvals, and reply behavior. HTTP mode registers Slack's receiver on heypi's shared HTTP listener.
 Socket Mode does not require a signing secret unless you also use HTTP interactivity. HTTP mode requires `signingSecret` to verify Slack requests.
 
 See [`docs/SLACK.md`](docs/SLACK.md) for scopes, events, manifests, and common setup failures.
 
-Inbound Slack messages can be restricted with `allow`. Omitted `teams`, `channels`, and `users` allow all delivered events for that dimension. `channels` applies to non-DM channels only. `allow.dms` defaults to `true`. `trigger` defaults to `"mention"` for top-level channel messages; thread replies and accepted DMs trigger by default. Use `threadTrigger: "mention"` to require mentions in thread replies. Slack progress defaults to an immediate `Thinking...` message; top-level channel messages also get an `eyes` reaction. Thread replies, DMs, and approval continuations do not get the reaction.
+Inbound Slack messages can be restricted with `allow`. Omitted `teams`, `channels`, and `users` allow all delivered events for that dimension. `channels` applies to non-DM channels only. `allow.dms` defaults to `true`. `trigger` defaults to `"mention"` for top-level channel messages; thread replies and accepted DMs trigger by default. Use `threadTrigger: "mention"` to require mentions in thread replies. Slack progress defaults to an immediate `Working...` message; top-level channel messages also get an `eyes` reaction. Thread replies, DMs, and approval continuations do not get the reaction.
 
 ### Telegram
 
@@ -276,7 +292,7 @@ telegram({
 
 See [`docs/TELEGRAM.md`](docs/TELEGRAM.md) for BotFather setup and chat discovery.
 
-Inbound Telegram messages can be restricted with `allow`. Omitted `chats` and `users` allow all delivered updates for that dimension. `chats` applies to groups/channels only. `allow.dms` defaults to `true`. `trigger` defaults to `"mention"` for top-level groups; forum topic replies and accepted private chats trigger by default. Use `threadTrigger: "mention"` to require mentions in forum topics. Telegram progress defaults to an immediate `Thinking...` message when streaming is off.
+Inbound Telegram messages can be restricted with `allow`. Omitted `chats` and `users` allow all delivered updates for that dimension. `chats` applies to groups/channels only. `allow.dms` defaults to `true`. `trigger` defaults to `"mention"` for top-level groups; forum topic replies and accepted private chats trigger by default. Use `threadTrigger: "mention"` to require mentions in forum topics. Telegram progress defaults to an immediate `Working...` message when streaming is off.
 
 ### Discord
 
@@ -300,7 +316,7 @@ discord({
 
 See [`docs/DISCORD.md`](docs/DISCORD.md) for bot setup, intents, invite URLs, and ID discovery.
 
-Inbound Discord messages can be restricted with `allow`. Omitted `guilds`, `channels`, and `users` allow all delivered events for that dimension. `channels` applies to non-DM channels only. `allow.dms` defaults to `true`. `trigger` defaults to `"mention"` for top-level guild channels; Discord thread channels and accepted DMs trigger by default. Use `threadTrigger: "mention"` to require mentions in Discord threads. Discord progress defaults to an immediate `Thinking...` message when streaming is off.
+Inbound Discord messages can be restricted with `allow`. Omitted `guilds`, `channels`, and `users` allow all delivered events for that dimension. `channels` applies to non-DM channels only. `allow.dms` defaults to `true`. `trigger` defaults to `"mention"` for top-level guild channels; Discord thread channels and accepted DMs trigger by default. Use `threadTrigger: "mention"` to require mentions in Discord threads. Discord progress defaults to an immediate `Working...` message when streaming is off.
 
 ### Webhook
 
@@ -340,7 +356,24 @@ See [`docs/WEBHOOK.md`](docs/WEBHOOK.md) for auth, threading, async callbacks, s
 
 Streaming is opt-in. Use `streaming: true` for the defaults, or pass `{ intervalMs, minChars, maxFailures }` to tune it. When enabled, heypi posts a draft reply and edits it at a bounded cadence while Pi emits text deltas. Confirmed tool calls stop the draft stream before approval buttons are sent; after approval, continuation can start a new draft stream.
 
-Slack still shows its immediate `Thinking...` progress message while streaming, and top-level channel messages get the configured reaction. Telegram and Discord suppress progress messages while streaming is active to avoid duplicate visible replies.
+Slack still shows its immediate `Working...` progress message while streaming, and top-level channel messages get the configured reaction. Telegram and Discord suppress progress messages while streaming is active to avoid duplicate visible replies.
+
+Same-thread messages received while a turn is already active default to Pi steering. heypi stores the inbound message, sends a short public acknowledgement, and injects the message into the active Pi session with actor attribution. The original `Working...` message stays as the progress anchor; when the turn finishes, heypi deletes it and posts the final answer at the bottom of the thread. Configure the behavior and copy globally:
+
+```ts
+createHeypi({
+	// ...
+	concurrency: {
+		busy: "steer", // "steer", "followUp", or "reject"
+		messages: {
+			busySteer: "Got it. I'll include that.",
+			busyFollowUp: "Got it. I'll handle that next.",
+			busyReject: "I'm still working on the previous message. Send this again after I reply, or use `cancel`.",
+			pendingApprovalReject: "I'm waiting for the pending approval first.",
+		},
+	},
+});
+```
 
 Adapter delivery is serialized by default and retries provider rate limits with backoff. Ambiguous timeouts are not retried for non-idempotent sends such as new chat messages or file uploads, because the provider may already have accepted the request.
 
@@ -357,8 +390,15 @@ Custom adapters implement:
 
 ```ts
 type Adapter = {
-	name?: string;
-	start(input: { handler: Handler; status?: Status; logger: Logger; attachments?: AttachmentStore }): Promise<void>;
+	name: string;
+	kind: string;
+	start(input: {
+		handler: Handler;
+		status?: Status;
+		logger: Logger;
+		attachments?: AttachmentStore;
+		http?: HttpRegistrar;
+	}): Promise<void>;
 	send?(target: AdapterTarget, out: Outbound, input?: AdapterStart): Promise<void>;
 	stop?(): Promise<void>;
 };
@@ -488,30 +528,39 @@ Attachments are limited to 25 MB by default, including streamed provider downloa
 ```ts
 attachments: {
 	process: {
-		documents: {
-			// Defaults to process.env.HEYPI_DOCUMENT_CONVERTER or "heypi-convert-document".
-			command: "./bin/heypi-convert-document",
-			timeoutMs: 15_000,
-			maxBytes: 10_000_000,
-			maxOutputBytes: 1_000_000,
-			// Defaults to PATH only so API keys/secrets are not inherited.
-			// Set env explicitly if your wrapper needs more.
-			env: { PATH: process.env.PATH ?? "" },
-		},
+		documents: true,
 	},
 }
 ```
 
-The document converter is not bundled. Provide a local wrapper command yourself, preferably in a constrained environment. The wrapper may use MarkItDown, a JS converter, Docker, or another implementation; it must accept one local file path and print Markdown to stdout. Do not enable network, plugin, or cloud conversion for untrusted chat attachments unless you have sandboxed and reviewed that path. If conversion fails or is disabled, heypi keeps the original attachment reference.
+`heypi-convert-document` is bundled and uses Microsoft MarkItDown. For the easiest setup, install `uv` and prewarm the converter environment once:
+
+```sh
+heypi-convert-document --setup
+```
+
+At runtime, the wrapper first tries to import MarkItDown from the active Python environment. If it is not available, it falls back to `uv run --with "markitdown[pdf,docx,pptx,xlsx]" ...`, which uses uv's cached isolated environment after setup. To avoid runtime dependency resolution in production, run `--setup` during deploy or install MarkItDown into the Python environment used by the wrapper:
+
+```sh
+python3 -m venv .venv-markitdown
+. .venv-markitdown/bin/activate
+python -m pip install "markitdown[pdf,docx,pptx,xlsx]"
+```
+
+Override `attachments.process.documents.command` or `HEYPI_DOCUMENT_CONVERTER` only when using a custom converter, Docker wrapper, or sandbox. The bundled wrapper accepts exactly one local file, rejects symlinks, rejects unsupported extensions, caps input and output size, disables MarkItDown plugins, and calls MarkItDown's local-file API. Configure wrapper limits with `HEYPI_CONVERT_MAX_BYTES`, `HEYPI_CONVERT_MAX_OUTPUT_BYTES`, `HEYPI_CONVERT_EXTENSIONS`, and `HEYPI_CONVERT_MARKITDOWN_PACKAGE` if needed. Set `HEYPI_CONVERT_NO_UV=1` to require a preinstalled MarkItDown environment. Do not enable plugins, cloud OCR, LLM image descriptions, or remote URI conversion for untrusted chat attachments unless you run conversion in a hardened sandbox. If conversion fails or is disabled, heypi keeps the original attachment reference.
 
 ## Shutdown
 
-Call `app.stop()` during process shutdown so adapters and the scheduler can stop cleanly:
+heypi takes an app-level lock by default (`app:<agent id>`) so two processes using the same store cannot run the same agent at once. This requires `store.locks`. The lock is refreshed while the app is running and released after shutdown drain completes. Override with `appLock: { ttlMs, drainMs }`, or set `appLock: false` only if your deployment has another single-instance guard.
+
+Call `app.stop()` during process shutdown. It stops the scheduler and adapters first, waits for active runs to finish, then cancels survivors after the configured drain timeout:
 
 ```ts
 process.once("SIGTERM", () => void app.stop().finally(() => process.exit(0)));
 process.once("SIGINT", () => void app.stop().finally(() => process.exit(0)));
 ```
+
+Force kills (`SIGKILL`, host crashes, OOMs) cannot drain. After the app lock expires, the next startup recovers abandoned running turns and thread locks.
 
 ## Store
 
@@ -523,7 +572,7 @@ sqliteStore({ path: "./heypi.db" })
 
 The filename is only a convention. `heypi.db`, `heypi.sqlite`, or any other SQLite filename works as long as the configured path is stable.
 
-For multi-instance deployments, implement the exported `Store` interface with durable shared storage and `locks` for thread serialization. Custom stores should implement `transaction()` for atomic multi-table updates; nested transactions are not supported. Scheduler-capable stores must provide `jobs`, `jobRuns`, `locks`, and persist `Job.idleMs`.
+For shared-store deployments, implement the exported `Store` interface with durable shared storage and `locks` for the app lock, thread serialization, and scheduler locks. Lock stores must support ownership, TTL expiry, refresh, and release. Custom stores should implement `transaction()` for atomic multi-table updates; nested transactions are not supported. Scheduler-capable stores must provide `jobs`, `jobRuns`, `locks`, and persist `Job.idleMs`.
 
 SQLite stores thread routes, including the Pi `sessionId` and `sessionPath`. New threads get a random session id and a relative session path like `sessions/<session-id>.jsonl`. Relative session paths are resolved under the configured runtime root; absolute paths are also supported by the runtime adapter. Chat output and logs are redacted before user-facing delivery. SQLite stores raw audit/search/status text, while Pi session JSONL files store the canonical model transcript. Protect both the database and session files as sensitive data.
 

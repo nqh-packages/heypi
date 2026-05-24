@@ -1,9 +1,12 @@
-import { type AllMiddlewareArgs, App, type types } from "@slack/bolt";
+import { type AllMiddlewareArgs, App, HTTPReceiver, type types } from "@slack/bolt";
 import { message as errorMessage, type Logger, userError } from "../core/log.js";
 import { chunkText } from "../render/chunk.js";
 import { type Attachment, type AttachmentStore, type ResolvedAttachment, responseBytes } from "./attachments.js";
+import { runChatMessage } from "./chat-message.js";
 import { type DeliveryConfig, DeliveryQueue } from "./delivery.js";
+import { allowByDimensions, messageTriggered } from "./gate.js";
 import type { Adapter, AdapterStart, AdapterTarget, Handler, Outbound } from "./handler.js";
+import { logCtx } from "./log-context.js";
 import { DraftReplyStream, type ReplyStreamOption } from "./reply-stream.js";
 
 const APPROVE = "heypi_approve";
@@ -14,6 +17,7 @@ const SLACK_TEXT_LIMIT = 4000;
 const SLACK_BLOCK_TEXT_LIMIT = 3000;
 
 export type SlackConfig = {
+	name?: string;
 	botToken: string;
 	allow?: SlackAllow;
 	trigger?: SlackTrigger;
@@ -57,19 +61,23 @@ export type SlackProgress = {
 /** Creates the Slack adapter using Socket Mode or Slack's HTTP receiver. */
 export function slack(input: SlackConfig): Adapter {
 	const setup = slackSetup(input);
+	const name = input.name ?? "slack";
+	const kind = "slack";
 	let app: App | undefined;
 	let activeLogger: Logger | undefined;
 	let delivery = new DeliveryQueue(input.delivery);
 	let botUserId: string | undefined;
 
 	return {
-		name: "slack",
+		name,
+		kind,
 		async start(start: AdapterStart): Promise<void> {
 			const { handler, logger: log } = start;
 			activeLogger = log;
 			delivery = new DeliveryQueue(input.delivery, log);
-			log.info("adapter.start", { adapter: "slack", mode: setup.mode });
-			const bolt = createSlackApp(input, setup);
+			log.info("adapter.start", { adapter: name, kind, mode: setup.mode });
+			const receiver = setup.mode === "http" ? createSlackReceiver(input, setup, start) : undefined;
+			const bolt = createSlackApp(input, setup, receiver);
 			app = bolt;
 			botUserId = await slackBotUserId(bolt.client, log);
 			bolt.action(APPROVE, async ({ ack, body, action, client }) => {
@@ -82,21 +90,53 @@ export function slack(input: SlackConfig): Adapter {
 					handler,
 					logger: log,
 					delivery,
+					provider: name,
+					adapterKind: kind,
 					progress: input.progress,
 					streaming: input.streaming,
 				});
 			});
 			bolt.action(DENY, async ({ ack, body, action, client }) => {
 				await ack();
-				await handleAction({ kind: "deny", body, action, client, handler, logger: log, delivery });
+				await handleAction({
+					kind: "deny",
+					body,
+					action,
+					client,
+					handler,
+					logger: log,
+					delivery,
+					provider: name,
+					adapterKind: kind,
+				});
 			});
 			bolt.action(CANCEL, async ({ ack, body, action, client }) => {
 				await ack();
-				await handleAction({ kind: "cancel", body, action, client, handler, logger: log, delivery });
+				await handleAction({
+					kind: "cancel",
+					body,
+					action,
+					client,
+					handler,
+					logger: log,
+					delivery,
+					provider: name,
+					adapterKind: kind,
+				});
 			});
 			bolt.action(STATUS, async ({ ack, body, action, client }) => {
 				await ack();
-				await handleAction({ kind: "status", body, action, client, handler, logger: log, delivery });
+				await handleAction({
+					kind: "status",
+					body,
+					action,
+					client,
+					handler,
+					logger: log,
+					delivery,
+					provider: name,
+					adapterKind: kind,
+				});
 			});
 			bolt.message(async ({ event, client, body }) => {
 				const msg = event as {
@@ -119,9 +159,16 @@ export function slack(input: SlackConfig): Adapter {
 				const mode = input.reply ?? "thread";
 				const reply = target(mode, msg);
 				const trace = msg.client_msg_id ?? msg.ts;
+				const context = (extra?: Record<string, unknown>) => logCtx({ trace, adapter: name, kind, channel }, extra);
 				const allow = slackAllowed(input.allow, { team, channel, user: msg.user, isDm: slackDm(msg) });
 				if (!allow.ok) {
-					log.debug("adapter.drop", { trace, adapter: "slack", channel, actor: msg.user, reason: allow.reason });
+					log.debug(
+						"adapter.drop",
+						context({
+							actor: msg.user,
+							reason: allow.reason,
+						}),
+					);
 					return;
 				}
 				const trigger = slackTriggered(input.trigger, {
@@ -133,17 +180,23 @@ export function slack(input: SlackConfig): Adapter {
 					threadTrigger: input.threadTrigger,
 				});
 				if (!trigger.ok) {
-					log.debug("adapter.drop", { trace, adapter: "slack", channel, actor: msg.user, reason: trigger.reason });
+					log.debug(
+						"adapter.drop",
+						context({
+							actor: msg.user,
+							reason: trigger.reason,
+						}),
+					);
 					return;
 				}
-				log.debug("adapter.receive", {
-					trace,
-					adapter: "slack",
-					channel,
-					thread: msg.thread_ts,
-					actor: msg.user,
-					event: msg.client_msg_id ?? msg.ts,
-				});
+				log.debug(
+					"adapter.receive",
+					context({
+						thread: msg.thread_ts,
+						actor: msg.user,
+						event: msg.client_msg_id ?? msg.ts,
+					}),
+				);
 				const progress = slackProgress(input.progress);
 				const stream = slackReplyStream({
 					config: input.streaming,
@@ -152,7 +205,7 @@ export function slack(input: SlackConfig): Adapter {
 					thread: reply.thread,
 					approval: undefined,
 					logger: log,
-					context: { trace, adapter: "slack", channel, thread: reply.thread },
+					context: context({ thread: reply.thread }),
 					delivery,
 				});
 				const pending = startProgress({
@@ -163,78 +216,108 @@ export function slack(input: SlackConfig): Adapter {
 					progress,
 					cancelId: trace,
 					logger: log,
-					context: { trace, adapter: "slack", channel, thread: msg.thread_ts ?? reply.thread, event: msg.ts },
+					context: context({ thread: msg.thread_ts ?? reply.thread, event: msg.ts }),
 					delivery,
 				});
-				try {
-					const attachments = await slackAttachments({
-						store: start.attachments,
-						files: msg.files,
-						token: input.botToken,
-						messageId: msg.ts,
+				await runChatMessage({
+					logger: log,
+					context: (extra) => context({ thread: reply.thread, ...extra }),
+					handler,
+					stream,
+					progress: pending,
+					loadAttachments: () =>
+						slackAttachments({
+							store: start.attachments,
+							files: msg.files,
+							token: input.botToken,
+							provider: name,
+							kind,
+							messageId: msg.ts,
+							trace,
+							logger: log,
+						}),
+					inbound: () => ({
 						trace,
-						logger: log,
-					});
-					const out = await handler({
-						trace,
-						provider: "slack",
+						provider: name,
+						kind,
 						eventId: msg.client_msg_id ?? msg.ts,
 						team,
 						channel,
 						actor: msg.user ?? "unknown",
 						thread: threadKey(input.reply ?? "thread", msg),
 						text: msg.text ?? "",
-						attachments,
 						data: { channel: msg.channel, ts: msg.ts, thread_ts: msg.thread_ts, files: msg.files },
-						stream,
-					});
-					if (out) {
-						if (out.private) {
-							await stream?.clear?.();
+					}),
+					sendPrivate: async (out) => {
+						await postEphemeralChunks({
+							client,
+							channel,
+							user: msg.user ?? "unknown",
+							text: out.text,
+							approval: out.approval,
+							thread: reply.thread,
+							delivery,
+						});
+						if (out.attachments?.length) {
 							await postEphemeralChunks({
 								client,
 								channel,
 								user: msg.user ?? "unknown",
-								text: out.text,
-								approval: out.approval,
+								text: "File attachments cannot be sent privately on Slack.",
 								thread: reply.thread,
 								delivery,
 							});
-							if (out.attachments?.length) {
-								await postEphemeralChunks({
-									client,
-									channel,
-									user: msg.user ?? "unknown",
-									text: "File attachments cannot be sent privately on Slack.",
-									thread: reply.thread,
-									delivery,
-								});
-							}
-							log.debug("adapter.send", {
-								trace,
-								adapter: "slack",
+						}
+					},
+					placement: {
+						fresh: async (out) => {
+							await postPublicChunks({
+								client,
 								channel,
-								private: true,
-								chars: out.text.length,
+								text: out.text,
+								approval: out.approval,
+								thread: reply.thread,
+								replyBroadcast: input.replyBroadcast ?? false,
+								skipFirst: false,
+								logger: log,
+								context: context({ thread: reply.thread }),
+								delivery,
 							});
-						} else {
-							if (stream?.complete?.() && !out.approval) {
-								await pending.stop();
-							} else {
-								const sent = await pending.update(out.text, out.approval);
-								await postPublicChunks({
-									client,
-									channel,
-									text: out.text,
-									approval: sent ? undefined : out.approval,
-									thread: reply.thread,
-									replyBroadcast: input.replyBroadcast ?? false,
-									skipFirst: sent,
-									logger: log,
-									context: { trace, adapter: "slack", channel, thread: reply.thread },
-									delivery,
-								});
-							}
+						},
+						streamed: async () => undefined,
+						progress: async (out) => {
+							const sent = await pending.update(out.text, out.approval);
+							await postPublicChunks({
+								client,
+								channel,
+								text: out.text,
+								approval: sent ? undefined : out.approval,
+								thread: reply.thread,
+								replyBroadcast: input.replyBroadcast ?? false,
+								skipFirst: sent,
+								logger: log,
+								context: context({ thread: reply.thread }),
+								delivery,
+							});
+						},
+					},
+					sendError: async () => {
+						const text = userError("handler");
+						const sent = await pending.update(text);
+						await postPublicChunks({
+							client,
+							channel,
+							text,
+							thread: reply.thread,
+							replyBroadcast: input.replyBroadcast ?? false,
+							skipFirst: sent,
+							logger: log,
+							context: context({ thread: reply.thread }),
+							delivery,
+						});
+					},
+					afterSend: async (out, visibility) => {
+						if (visibility === "public") {
 							await uploadSlackAttachments({
 								client,
 								store: start.attachments,
@@ -242,50 +325,24 @@ export function slack(input: SlackConfig): Adapter {
 								thread: reply.thread,
 								attachments: out.attachments,
 								logger: log,
-								context: { trace, adapter: "slack", channel, thread: reply.thread },
+								context: context({ thread: reply.thread }),
 								delivery,
 							});
-							log.debug("adapter.send", {
-								trace,
-								adapter: "slack",
-								channel,
-								thread: reply.thread,
-								chars: out.text.length,
-							});
 						}
-					}
-				} catch (error) {
-					log.error("adapter.error", {
-						trace,
-						adapter: "slack",
-						channel,
-						thread: reply.thread,
-						error: errorMessage(error),
-					});
-					const text = userError("handler");
-					const sent = await pending.update(text);
-					await postPublicChunks({
-						client,
-						channel,
-						text,
-						thread: reply.thread,
-						replyBroadcast: input.replyBroadcast ?? false,
-						skipFirst: sent,
-						logger: log,
-						context: { trace, adapter: "slack", channel, thread: reply.thread },
-						delivery,
-					});
-				} finally {
-					await pending.stop();
-				}
+						const fields =
+							visibility === "public"
+								? { thread: reply.thread, chars: out.text.length }
+								: { private: true, chars: out.text.length };
+						log.debug("adapter.send", context(fields));
+					},
+				});
 			});
-			if (setup.mode === "http") await bolt.start(setup.port);
-			else await bolt.start();
+			if (setup.mode === "socket") await bolt.start();
 		},
 		async stop(): Promise<void> {
-			await app?.stop();
+			if (setup.mode === "socket") await app?.stop();
 			app = undefined;
-			activeLogger?.info("adapter.stop", { adapter: "slack", mode: setup.mode });
+			activeLogger?.info("adapter.stop", { adapter: name, kind, mode: setup.mode });
 		},
 		async send(target: AdapterTarget, out: Outbound, start?: AdapterStart): Promise<void> {
 			const log = start?.logger ?? activeLogger;
@@ -299,7 +356,7 @@ export function slack(input: SlackConfig): Adapter {
 				thread: target.mode === "channel" ? undefined : target.thread,
 				replyBroadcast: input.replyBroadcast ?? false,
 				logger: log,
-				context: { adapter: "slack", channel, thread: target.thread },
+				context: { adapter: name, kind, channel, thread: target.thread },
 				delivery,
 			});
 			await uploadSlackAttachments({
@@ -309,10 +366,10 @@ export function slack(input: SlackConfig): Adapter {
 				thread: target.mode === "channel" ? undefined : target.thread,
 				attachments: out.attachments,
 				logger: log ?? { debug() {}, info() {}, warn() {}, error() {} },
-				context: { adapter: "slack", channel, thread: target.thread },
+				context: { adapter: name, kind, channel, thread: target.thread },
 				delivery,
 			});
-			log?.debug("adapter.send", { adapter: "slack", channel, thread: target.thread, chars: out.text.length });
+			log?.debug("adapter.send", { adapter: name, kind, channel, thread: target.thread, chars: out.text.length });
 		},
 	};
 }
@@ -352,6 +409,7 @@ function createSlackApp(
 	setup:
 		| { mode: "socket"; appToken: string; endpoints?: undefined; port?: undefined }
 		| { mode: "http"; appToken?: undefined; endpoints: string | string[]; port: number | string },
+	receiver?: HTTPReceiver,
 ): App {
 	return new App({
 		token: input.botToken,
@@ -359,7 +417,30 @@ function createSlackApp(
 		socketMode: setup.mode === "socket",
 		appToken: setup.appToken,
 		endpoints: setup.endpoints,
+		receiver,
 	});
+}
+
+function createSlackReceiver(
+	input: SlackConfig,
+	setup: { mode: "http"; endpoints: string | string[]; port: number | string },
+	start: AdapterStart,
+): HTTPReceiver {
+	if (!start.http) throw new Error("Slack HTTP mode requires the heypi HTTP registrar");
+	const receiver = new HTTPReceiver({
+		signingSecret: input.signingSecret ?? "",
+		endpoints: setup.endpoints,
+	});
+	const endpoints = Array.isArray(setup.endpoints) ? setup.endpoints : [setup.endpoints];
+	for (const path of endpoints) {
+		start.http.register({
+			method: "POST",
+			path,
+			port: setup.port,
+			handler: receiver.requestListener,
+		});
+	}
+	return receiver;
 }
 
 function requiredSlackApp(app: App | undefined): App {
@@ -569,7 +650,7 @@ function startProgress(input: {
 	let placeholder: string | undefined;
 	let placeholderTask: Promise<void> | undefined;
 	const reaction = input.progress ? (input.progress.reaction ?? "eyes") : false;
-	const message = input.progress ? (input.progress.message ?? "Thinking...") : false;
+	const message = input.progress ? (input.progress.message ?? "Working...") : false;
 
 	if (reaction && input.target && input.source) {
 		const source = input.source;
@@ -722,11 +803,16 @@ export function slackAllowed(
 	allow: SlackAllow | undefined,
 	event: { team?: string; channel?: string; user?: string; isDm: boolean },
 ): { ok: true } | { ok: false; reason: string } {
-	if (event.isDm && allow?.dms === false) return { ok: false, reason: "dm_not_allowed" };
-	if (!included(allow?.teams, event.team)) return { ok: false, reason: "team_not_allowed" };
-	if (!event.isDm && !included(allow?.channels, event.channel)) return { ok: false, reason: "channel_not_allowed" };
-	if (!included(allow?.users, event.user)) return { ok: false, reason: "user_not_allowed" };
-	return { ok: true };
+	return allowByDimensions({
+		dms: allow?.dms,
+		isDm: event.isDm,
+		dmReason: "dm_not_allowed",
+		dimensions: [
+			{ allowlist: allow?.teams, value: event.team, reason: "team_not_allowed" },
+			{ allowlist: allow?.channels, value: event.channel, reason: "channel_not_allowed", skip: event.isDm },
+			{ allowlist: allow?.users, value: event.user, reason: "user_not_allowed" },
+		],
+	});
 }
 
 export function slackTriggered(
@@ -740,16 +826,15 @@ export function slackTriggered(
 		threadTrigger?: SlackTrigger | false;
 	},
 ): { ok: true } | { ok: false; reason: string } {
-	if (event.isDm) return { ok: true };
-	if ((trigger ?? "mention") === "message") return { ok: true };
-	if (event.thread && (event.threadTrigger ?? "message") === "message") return { ok: true };
-	if (event.type === "app_mention") return { ok: true };
-	if (event.botUserId && event.text?.includes(`<@${event.botUserId}>`)) return { ok: true };
-	return { ok: false, reason: "mention_required" };
-}
-
-function included(allowlist: string[] | undefined, value: string | undefined): boolean {
-	return !allowlist?.length || (value !== undefined && allowlist.includes(value));
+	return messageTriggered({
+		trigger,
+		isDm: event.isDm,
+		thread: event.thread,
+		threadTrigger: event.threadTrigger,
+		mentioned:
+			event.type === "app_mention" || Boolean(event.botUserId && event.text?.includes(`<@${event.botUserId}>`)),
+		reason: "mention_required",
+	});
 }
 
 type SlackClient = AllMiddlewareArgs["client"];
@@ -770,6 +855,8 @@ async function slackAttachments(input: {
 	store?: AttachmentStore;
 	files?: SlackFile[];
 	token: string;
+	provider: string;
+	kind: string;
 	messageId?: string;
 	trace?: string;
 	logger: Logger;
@@ -782,7 +869,8 @@ async function slackAttachments(input: {
 		if (input.store.maxBytes !== undefined && file.size !== undefined && file.size > input.store.maxBytes) {
 			input.logger.warn("slack.attachment_too_large", {
 				trace: input.trace,
-				adapter: "slack",
+				adapter: input.provider,
+				kind: input.kind,
 				file: file.id ?? file.name,
 				size: file.size,
 				maxBytes: input.store.maxBytes,
@@ -796,7 +884,7 @@ async function slackAttachments(input: {
 			const data = await responseBytes(response, input.store.maxBytes);
 			attachments.push(
 				await input.store.save({
-					provider: "slack",
+					provider: input.provider,
 					id: file.id,
 					name: file.name ?? file.title ?? file.id ?? "attachment",
 					data,
@@ -808,7 +896,8 @@ async function slackAttachments(input: {
 		} catch (error) {
 			input.logger.warn("slack.attachment_failed", {
 				trace: input.trace,
-				adapter: "slack",
+				adapter: input.provider,
+				kind: input.kind,
 				file: file.id ?? file.name,
 				error: errorMessage(error),
 			});
@@ -835,6 +924,8 @@ async function handleAction(input: {
 	handler: Handler;
 	logger: Logger;
 	delivery: DeliveryQueue;
+	provider: string;
+	adapterKind: string;
 	progress?: SlackConfig["progress"];
 	streaming?: ReplyStreamOption;
 }): Promise<void> {
@@ -846,6 +937,8 @@ async function handleAction(input: {
 	const actionActor = context.actor;
 	const trace = `${input.kind}:${value ?? context.message ?? context.trigger ?? Date.now()}`;
 	const target = context.threadTs ?? context.message;
+	const logContext = (extra?: Record<string, unknown>) =>
+		logCtx({ trace, adapter: input.provider, kind: input.adapterKind, channel: actionChannel }, extra);
 	let acknowledged = false;
 	let progress: ReturnType<typeof startProgress> | undefined;
 	const acknowledge = async (text: string) => {
@@ -860,7 +953,7 @@ async function handleAction(input: {
 					text: first,
 					blocks: [{ type: "section", text: { type: "mrkdwn", text: first } }],
 				}),
-			{ trace, adapter: "slack", channel: actionChannel },
+			logContext(),
 		);
 		acknowledged = true;
 		if (input.kind === "approve" && target) {
@@ -872,7 +965,7 @@ async function handleAction(input: {
 				progress: { ...slackProgress(input.progress), reaction: false },
 				cancelId: trace,
 				logger: input.logger,
-				context: { trace, adapter: "slack", channel: actionChannel, thread: target },
+				context: logContext({ thread: target }),
 				delivery: input.delivery,
 			});
 		}
@@ -888,7 +981,7 @@ async function handleAction(input: {
 					text: out.text,
 					blocks: [{ type: "section", text: { type: "mrkdwn", text: out.text } }],
 				}),
-			{ trace, adapter: "slack", channel: actionChannel },
+			logContext(),
 		);
 	};
 	const stream =
@@ -900,14 +993,15 @@ async function handleAction(input: {
 					thread: target,
 					approval: undefined,
 					logger: input.logger,
-					context: { trace, adapter: "slack", channel: context.channel, thread: target },
+					context: logContext({ channel: context.channel, thread: target }),
 					delivery: input.delivery,
 				})
 			: undefined;
 	try {
 		const out = await input.handler({
 			trace,
-			provider: "slack",
+			provider: input.provider,
+			kind: input.adapterKind,
 			eventId: trace,
 			team: context.team,
 			channel: context.channel,
@@ -932,7 +1026,7 @@ async function handleAction(input: {
 				thread: context.threadTs ?? context.message,
 				delivery: input.delivery,
 			});
-			input.logger.debug("adapter.send", { trace, adapter: "slack", channel: context.channel, private: true });
+			input.logger.debug("adapter.send", logContext({ channel: context.channel, private: true }));
 			return;
 		}
 		const channel = context.channel;
@@ -952,11 +1046,11 @@ async function handleAction(input: {
 					thread: context.threadTs ?? message,
 					skipFirst: sent,
 					logger: input.logger,
-					context: { trace, adapter: "slack", channel, thread: context.threadTs ?? message },
+					context: logContext({ channel, thread: context.threadTs ?? message }),
 					delivery: input.delivery,
 				});
 			}
-			input.logger.debug("adapter.send", { trace, adapter: "slack", channel: context.channel, update: true });
+			input.logger.debug("adapter.send", logContext({ channel: context.channel, update: true }));
 			return;
 		}
 		const first = actionResultText(input.kind, context.actor, streamed ? "" : (chunks[0] ?? ""), value);
@@ -971,7 +1065,7 @@ async function handleAction(input: {
 					text: first,
 					blocks: [{ type: "section", text: { type: "mrkdwn", text: first } }],
 				}),
-			{ trace, adapter: "slack", channel },
+			logContext({ channel }),
 		);
 		for (let index = streamed ? chunks.length : 1; index < chunks.length; index++) {
 			await input.delivery.run(
@@ -981,19 +1075,20 @@ async function handleAction(input: {
 						text: chunks[index],
 						thread_ts: context.threadTs ?? message,
 					}),
-				{ trace, adapter: "slack", channel, retry: "send" },
+				logContext({ channel, retry: "send" }),
 			);
 		}
-		input.logger.debug("adapter.send", { trace, adapter: "slack", channel: context.channel, update: true });
+		input.logger.debug("adapter.send", logContext({ channel: context.channel, update: true }));
 	} catch (error) {
 		await stream?.stop();
-		input.logger.error("adapter.error", {
-			trace,
-			adapter: "slack",
-			channel: context.channel,
-			actor: context.actor,
-			error: errorMessage(error),
-		});
+		input.logger.error(
+			"adapter.error",
+			logContext({
+				channel: context.channel,
+				actor: context.actor,
+				error: errorMessage(error),
+			}),
+		);
 		if (context.message) {
 			await input.client.chat
 				.update({

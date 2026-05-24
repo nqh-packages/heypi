@@ -11,6 +11,7 @@ export class ThreadRepo {
 	async getOrCreate(input: {
 		agent: string;
 		provider: string;
+		kind?: string;
 		team?: string;
 		channel: string;
 		actor?: string;
@@ -29,6 +30,7 @@ export class ThreadRepo {
 				id,
 				agent: input.agent,
 				provider: input.provider,
+				kind: input.kind ?? input.provider,
 				team,
 				channel: input.channel,
 				actor: input.actor,

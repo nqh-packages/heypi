@@ -14,6 +14,7 @@ export class TurnRepo {
 		inputMessageId: string;
 		agent: string;
 		provider: string;
+		kind?: string;
 		channel: string;
 		actor?: string;
 		trace?: string;
@@ -27,6 +28,7 @@ export class TurnRepo {
 			inputMessageId: input.inputMessageId,
 			agent: input.agent,
 			provider: input.provider,
+			kind: input.kind ?? input.provider,
 			channel: input.channel,
 			actor: input.actor,
 			trace: input.trace,

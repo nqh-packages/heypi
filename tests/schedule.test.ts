@@ -22,6 +22,7 @@ test("createHeypi installs configured jobs", async () => {
 		const store = sqliteStore({ path: join(root, "heypi.db") });
 		const adapter: Adapter = {
 			name: "test",
+			kind: "test",
 			start: async () => undefined,
 			send: async () => undefined,
 			stop: async () => undefined,

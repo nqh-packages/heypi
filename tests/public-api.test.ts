@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -21,6 +22,8 @@ test("public package entrypoint supports a minimal app config", async () => {
 	const root = await mkdtemp(join(tmpdir(), "heypi-public-api-"));
 	try {
 		const adapter: Adapter = {
+			name: "test",
+			kind: "test",
 			start: async () => undefined,
 			stop: async () => undefined,
 		};
@@ -59,6 +62,8 @@ test("createHeypi passes injected attachment store to adapters", async () => {
 			resolve: async () => ({ name: "out.txt", path: join(root, "out.txt"), size: 0 }),
 		};
 		const adapter: Adapter = {
+			name: "test",
+			kind: "test",
 			start: async (input) => {
 				received = input.attachments;
 			},
@@ -78,6 +83,7 @@ test("createHeypi passes injected attachment store to adapters", async () => {
 		await app.start();
 
 		assert.equal(received, attachments);
+		await app.stop();
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
@@ -86,20 +92,25 @@ test("createHeypi passes injected attachment store to adapters", async () => {
 test("createHeypi stops started adapters when a later adapter fails to start", async () => {
 	const root = await mkdtemp(join(tmpdir(), "heypi-public-api-startup-"));
 	try {
+		const store = sqliteStore({ path: join(root, "heypi.db") });
 		let stopped = false;
 		const first: Adapter = {
+			name: "first",
+			kind: "test",
 			start: async () => undefined,
 			stop: async () => {
 				stopped = true;
 			},
 		};
 		const second: Adapter = {
+			name: "second",
+			kind: "test",
 			start: async () => {
 				throw new Error("boom");
 			},
 		};
 		const app = createHeypi({
-			store: sqliteStore({ path: join(root, "heypi.db") }),
+			store,
 			logger: consoleLogger({ level: "error", format: "pretty" }),
 			adapters: [first, second],
 			agent: agentFrom("./examples/slack-devops/agent", { id: "default", model: "openai/gpt-5-mini" }),
@@ -110,6 +121,215 @@ test("createHeypi stops started adapters when a later adapter fails to start", a
 		});
 
 		await assert.rejects(() => app.start(), /boom/);
+		assert.equal(stopped, true);
+		assert.equal(await store.locks?.get("app:default"), undefined);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("createHeypi rejects duplicate adapter names", async () => {
+	const root = await mkdtemp(join(tmpdir(), "heypi-public-api-duplicate-adapter-"));
+	try {
+		const store = sqliteStore({ path: join(root, "heypi.db") });
+		assert.throws(
+			() =>
+				createHeypi({
+					store,
+					logger: consoleLogger({ level: "error", format: "pretty" }),
+					adapters: [
+						{ name: "same", kind: "test", start: async () => undefined },
+						{ name: "same", kind: "test", start: async () => undefined },
+					],
+					agent: agentFrom("./examples/slack-devops/agent", { id: "default", model: "openai/gpt-5-mini" }),
+					runtime: { name: "host-bash", root: workspace(join(root, "workspace")) },
+				}),
+			/duplicate adapter name: same/,
+		);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("createHeypi serves HTTP routes from multiple adapters on one listener", async () => {
+	const root = await mkdtemp(join(tmpdir(), "heypi-public-api-shared-http-"));
+	const port = await freePort();
+	try {
+		const app = createHeypi({
+			store: sqliteStore({ path: join(root, "heypi.db") }),
+			logger: consoleLogger({ level: "error", format: "pretty" }),
+			adapters: [
+				{
+					name: "a",
+					kind: "test",
+					start: async ({ http }) => {
+						http?.register({
+							method: "GET",
+							path: "/a",
+							port,
+							handler: (_req, res) => {
+								res.end("a");
+							},
+						});
+					},
+				},
+				{
+					name: "b",
+					kind: "test",
+					start: async ({ http }) => {
+						http?.register({
+							method: "GET",
+							path: "/b",
+							port,
+							handler: (_req, res) => {
+								res.end("b");
+							},
+						});
+					},
+				},
+			],
+			agent: agentFrom("./examples/slack-devops/agent", { id: "default", model: "openai/gpt-5-mini" }),
+			runtime: { name: "host-bash", root: workspace(join(root, "workspace")) },
+		});
+		await app.start();
+		try {
+			assert.equal(await (await fetch(`http://127.0.0.1:${port}/a`)).text(), "a");
+			assert.equal(await (await fetch(`http://127.0.0.1:${port}/b`)).text(), "b");
+		} finally {
+			await app.stop();
+		}
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("createHeypi rejects duplicate HTTP routes", async () => {
+	const root = await mkdtemp(join(tmpdir(), "heypi-public-api-duplicate-http-"));
+	const port = await freePort();
+	try {
+		const app = createHeypi({
+			store: sqliteStore({ path: join(root, "heypi.db") }),
+			logger: consoleLogger({ level: "error", format: "pretty" }),
+			adapters: [
+				{
+					name: "a",
+					kind: "test",
+					start: async ({ http }) => {
+						http?.register({
+							method: "GET",
+							path: "/same",
+							port,
+							handler: (_req, res) => {
+								res.end("a");
+							},
+						});
+					},
+				},
+				{
+					name: "b",
+					kind: "test",
+					start: async ({ http }) => {
+						http?.register({
+							method: "GET",
+							path: "/same",
+							port,
+							handler: (_req, res) => {
+								res.end("b");
+							},
+						});
+					},
+				},
+			],
+			agent: agentFrom("./examples/slack-devops/agent", { id: "default", model: "openai/gpt-5-mini" }),
+			runtime: { name: "host-bash", root: workspace(join(root, "workspace")) },
+		});
+		await assert.rejects(() => app.start(), /duplicate HTTP route: GET \/same/);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("createHeypi refuses to start when another app instance holds the lock", async () => {
+	const root = await mkdtemp(join(tmpdir(), "heypi-public-api-app-lock-"));
+	try {
+		const store = sqliteStore({ path: join(root, "heypi.db") });
+		await store.setup();
+		await store.locks?.acquire({ key: "app:default", owner: "other-process", ttlMs: 60_000 });
+		const app = createHeypi({
+			store,
+			logger: consoleLogger({ level: "error", format: "pretty" }),
+			adapters: [{ name: "test", kind: "test", start: async () => undefined }],
+			agent: agentFrom("./examples/slack-devops/agent", { id: "default", model: "openai/gpt-5-mini" }),
+			runtime: {
+				name: "host-bash",
+				root: workspace(join(root, "workspace")),
+			},
+		});
+
+		await assert.rejects(() => app.start(), /app lock is held/);
+		assert.equal((await store.locks?.get("app:default"))?.owner, "other-process");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("createHeypi releases the app lock on stop", async () => {
+	const root = await mkdtemp(join(tmpdir(), "heypi-public-api-app-lock-release-"));
+	try {
+		const store = sqliteStore({ path: join(root, "heypi.db") });
+		const app = createHeypi({
+			store,
+			logger: consoleLogger({ level: "error", format: "pretty" }),
+			adapters: [{ name: "test", kind: "test", start: async () => undefined }],
+			agent: agentFrom("./examples/slack-devops/agent", { id: "default", model: "openai/gpt-5-mini" }),
+			runtime: {
+				name: "host-bash",
+				root: workspace(join(root, "workspace")),
+			},
+		});
+
+		await app.start();
+		assert.equal((await store.locks?.get("app:default"))?.key, "app:default");
+		await app.stop();
+
+		assert.equal(await store.locks?.get("app:default"), undefined);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("createHeypi stops when app lock refresh loses ownership", async () => {
+	const root = await mkdtemp(join(tmpdir(), "heypi-public-api-app-lock-lost-"));
+	try {
+		const store = sqliteStore({ path: join(root, "heypi.db") });
+		let stopped = false;
+		const app = createHeypi({
+			store,
+			logger: consoleLogger({ level: "error", format: "pretty" }),
+			adapters: [
+				{
+					name: "test",
+					kind: "test",
+					start: async () => undefined,
+					stop: async () => {
+						stopped = true;
+					},
+				},
+			],
+			appLock: { ttlMs: 30, drainMs: 10 },
+			agent: agentFrom("./examples/slack-devops/agent", { id: "default", model: "openai/gpt-5-mini" }),
+			runtime: {
+				name: "host-bash",
+				root: workspace(join(root, "workspace")),
+			},
+		});
+
+		await app.start();
+		const lock = await store.locks?.get("app:default");
+		assert.ok(lock);
+		await store.locks?.release({ key: "app:default", owner: lock.owner });
+		await waitFor(() => stopped);
+
 		assert.equal(stopped, true);
 	} finally {
 		await rm(root, { recursive: true, force: true });
@@ -146,7 +366,7 @@ test("createHeypi recovers stale running turns and thread locks on startup", asy
 		});
 		await store.locks?.acquire({ key: `thread:${thread.id}`, owner: "dead-process" });
 
-		const adapter: Adapter = { start: async () => undefined };
+		const adapter: Adapter = { name: "test", kind: "test", start: async () => undefined };
 		const app = createHeypi({
 			store,
 			logger: consoleLogger({ level: "error", format: "pretty" }),
@@ -168,3 +388,20 @@ test("createHeypi recovers stale running turns and thread locks on startup", asy
 		await rm(root, { recursive: true, force: true });
 	}
 });
+
+async function waitFor(fn: () => boolean): Promise<void> {
+	const start = Date.now();
+	while (!fn()) {
+		if (Date.now() - start > 1_000) throw new Error("condition timed out");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+}
+
+async function freePort(): Promise<number> {
+	const server = createServer();
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+	if (!address || typeof address === "string") throw new Error("missing port");
+	return address.port;
+}

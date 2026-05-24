@@ -3,6 +3,11 @@ import type { Reply, ToolContinuation } from "../core/types.js";
 import type { Attachment } from "../io/attachments.js";
 import type { ReplyStream } from "../io/reply-stream.js";
 
+export type AgentLiveSession = {
+	steer(text: string, attachments?: Attachment[]): Promise<void>;
+	followUp(text: string, attachments?: Attachment[]): Promise<void>;
+};
+
 export type AgentReq = {
 	threadId: string;
 	sessionId: string;
@@ -22,6 +27,7 @@ export type AgentReq = {
 	attachments?: Attachment[];
 	signal?: AbortSignal;
 	stream?: ReplyStream;
+	onLiveSession?: (session: AgentLiveSession | undefined) => void;
 };
 
 export type AgentRes = Reply;

@@ -340,7 +340,7 @@ export class CallRunner {
 			});
 			return { text: `approval already ${approval.state} by ${approval.resolvedBy ?? "unknown"}`, private: true };
 		}
-		if (!this.canApprove(intent.actor)) {
+		if (!this.canDeny(intent.actor, approval.requestedBy ?? undefined)) {
 			this.log.warn("approval.unauthorized", {
 				approval: approval.id,
 				call: approval.callId,
@@ -398,6 +398,10 @@ export class CallRunner {
 	private canApprove(actor: string): boolean {
 		const approvers = this.approval.approvers ?? [];
 		return approvers.length === 0 || approvers.includes(actor);
+	}
+
+	private canDeny(actor: string, requestedBy?: string): boolean {
+		return this.canApprove(actor) || actor === requestedBy;
 	}
 
 	private approvers(): string[] {

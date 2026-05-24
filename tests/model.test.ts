@@ -3,12 +3,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { CallRunner } from "../src/core/calls.js";
 import { commandConfirm } from "../src/core/policy.js";
 import { createHandler, createStatus } from "../src/io/handler.js";
 import type { ReplyStream } from "../src/io/reply-stream.js";
 import type { AgentReq } from "../src/runtime/agent.js";
-import { applyModelPayloadConfig, streamTextDelta } from "../src/runtime/pi-agent.js";
+import { applyModelPayloadConfig, streamTextDelta, toolResultParentEntryId } from "../src/runtime/pi-agent.js";
 import { Queue } from "../src/runtime/queue.js";
 import { sqliteStore } from "../src/store/sqlite.js";
 
@@ -32,6 +33,44 @@ test("model payload config applies response verbosity", () => {
 			},
 		),
 		{ model: "gpt-5-mini", input: [], text: { format: { type: "text" }, verbosity: "low" } },
+	);
+});
+
+test("approved tool continuations branch from the synthetic tool result parent", () => {
+	const session = SessionManager.inMemory(".");
+	const assistant = session.appendMessage({
+		role: "assistant",
+		content: [
+			{ type: "toolCall", id: "tool-call-1", name: "first", input: {} },
+			{ type: "toolCall", id: "tool-call-2", name: "second", input: {} },
+		],
+	} as unknown as Parameters<SessionManager["appendMessage"]>[0]);
+	const firstResult = session.appendMessage({
+		role: "toolResult",
+		toolCallId: "tool-call-1",
+		toolName: "first",
+		content: [{ type: "text", text: "first result" }],
+	} as Parameters<SessionManager["appendMessage"]>[0]);
+	session.appendMessage({
+		role: "toolResult",
+		toolCallId: "tool-call-2",
+		toolName: "second",
+		content: [{ type: "text", text: "pending approval" }],
+	} as Parameters<SessionManager["appendMessage"]>[0]);
+
+	assert.equal(toolResultParentEntryId(session, "tool-call-1"), assistant);
+	assert.equal(toolResultParentEntryId(session, "tool-call-2"), firstResult);
+	session.branch(toolResultParentEntryId(session, "tool-call-2") as string);
+	session.appendMessage({
+		role: "toolResult",
+		toolCallId: "tool-call-2",
+		toolName: "second",
+		content: [{ type: "text", text: "approved result" }],
+	} as Parameters<SessionManager["appendMessage"]>[0]);
+	const messages = session.buildSessionContext().messages;
+	assert.deepEqual(
+		messages.filter((message) => message.role === "toolResult").map((message) => message.toolCallId),
+		["tool-call-1", "tool-call-2"],
 	);
 });
 
@@ -112,6 +151,92 @@ test("handler passes inbound attachments to agent", async () => {
 		assert.deepEqual(request?.attachments, [
 			{ name: "image.png", path: "/incoming/image.png", mimeType: "image/png", size: 5 },
 		]);
+	} finally {
+		await db.cleanup();
+	}
+});
+
+test("handler blocks new asks while the thread has a pending approval", async () => {
+	const db = await tempDb();
+	try {
+		const store = sqliteStore({ path: db.path });
+		await store.setup();
+		const thread = await store.threads.getOrCreate({
+			agent: "a",
+			provider: "test",
+			channel: "C1",
+			actor: "U1",
+			key: "T1",
+		});
+		const message = await store.messages.create({
+			threadId: thread.id,
+			provider: "test",
+			role: "user",
+			actor: "U1",
+			text: "run command",
+		});
+		const turn = await store.turns.create({
+			threadId: thread.id,
+			inputMessageId: message.id,
+			agent: "a",
+			provider: "test",
+			channel: "C1",
+			actor: "U1",
+			trace: "trace-pending",
+		});
+		const call = await store.calls.create({
+			turnId: turn.id,
+			threadId: thread.id,
+			messageId: message.id,
+			channel: "test::C1",
+			actor: "U1",
+			tool: "bash",
+			command: "curl https://example.com",
+			runtime: "just-bash",
+			state: "pending_approval",
+		});
+		await store.approvals.create({
+			callId: call.id,
+			channel: "test::C1",
+			threadId: thread.id,
+			turnId: turn.id,
+			requestedBy: "U1",
+			command: "curl https://example.com",
+			runtime: "just-bash",
+			reason: "Run bash command.",
+		});
+		let asked = false;
+		const handler = createHandler({
+			agentId: "a",
+			store,
+			callRunner: new CallRunner(store.calls, store.approvals, new Queue({}), {
+				name: "host-bash",
+				root: ".",
+				capabilities: {},
+			}),
+			agent: {
+				ask: async () => {
+					asked = true;
+					return { text: "ok" };
+				},
+				continue: async () => ({ text: "ok" }),
+			},
+		});
+
+		const out = await handler({
+			trace: "trace-new-ask",
+			provider: "test",
+			eventId: "event-new-ask",
+			channel: "C1",
+			actor: "U1",
+			thread: "T1",
+			text: "what now?",
+		});
+
+		assert.equal(asked, false);
+		assert.equal(out?.private, undefined);
+		assert.equal(out?.finalPlacement, "thread");
+		assert.match(out?.text ?? "", /approval/i);
 	} finally {
 		await db.cleanup();
 	}

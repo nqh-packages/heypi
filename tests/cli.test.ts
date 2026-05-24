@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { sqliteStore } from "@hunvreus/heypi";
 
 const CLI = resolve("dist/cli.js");
+const CONVERT_DOCUMENT = resolve("bin/heypi-convert-document");
 
 function cli(args: string[], input?: { env?: NodeJS.ProcessEnv; cwd?: string }): string {
 	return execFileSync(process.execPath, [CLI, ...args], {
@@ -112,4 +113,14 @@ test("cli errors do not echo supplied provider tokens", () => {
 	assert.notEqual(result.status, 0);
 	assert.match(result.stderr, /Missing --app-token or SLACK_APP_TOKEN/);
 	assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, new RegExp(token));
+});
+
+test("document converter wrapper rejects invalid invocation", () => {
+	const result = spawnSync(CONVERT_DOCUMENT, [], {
+		cwd: process.cwd(),
+		encoding: "utf8",
+	});
+	assert.notEqual(result.status, 0);
+	assert.equal(result.stdout, "");
+	assert.match(result.stderr, /expected exactly one local file path/);
 });

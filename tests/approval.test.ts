@@ -181,6 +181,62 @@ test("authorized denial logs approval.denied", async () => {
 	);
 });
 
+test("approval requester can deny their own pending action", async () => {
+	const calls = new FakeCalls();
+	const approvals = new FakeApprovals();
+	const callRunner = new CallRunner(
+		calls,
+		approvals,
+		new Queue({ maxConcurrent: 1, maxPerChat: 1 }),
+		runtime(),
+		{ approvers: ["U_ALLOWED"] },
+		noLogger(),
+		undefined,
+		commandConfirm(),
+	);
+
+	await callRunner.bash("C1", "U_REQUESTER", "curl https://example.com");
+	const denied = await callRunner.handle({
+		kind: "deny",
+		approvalId: approvals.rows[0].id,
+		channel: "C1",
+		actor: "U_REQUESTER",
+	});
+
+	assert.match(denied.text, /Approval required/);
+	assert.equal(approvals.rows[0].state, "denied");
+	assert.equal(approvals.rows[0].resolvedBy, "U_REQUESTER");
+	assert.equal(calls.rows[0].state, "blocked");
+});
+
+test("approval denial rejects actors who are neither approvers nor requesters", async () => {
+	const calls = new FakeCalls();
+	const approvals = new FakeApprovals();
+	const callRunner = new CallRunner(
+		calls,
+		approvals,
+		new Queue({ maxConcurrent: 1, maxPerChat: 1 }),
+		runtime(),
+		{ approvers: ["U_ALLOWED"] },
+		noLogger(),
+		undefined,
+		commandConfirm(),
+	);
+
+	await callRunner.bash("C1", "U_REQUESTER", "curl https://example.com");
+	const denied = await callRunner.handle({
+		kind: "deny",
+		approvalId: approvals.rows[0].id,
+		channel: "C1",
+		actor: "U_OTHER",
+	});
+
+	assert.equal(denied.private, true);
+	assert.match(denied.text, /not allowed/i);
+	assert.equal(approvals.rows[0].state, "pending");
+	assert.equal(calls.rows[0].state, "pending_approval");
+});
+
 test("expired approval logs approval.expired", async () => {
 	const calls = new FakeCalls();
 	const approvals = new FakeApprovals();

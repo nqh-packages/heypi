@@ -7,6 +7,7 @@ export type Thread = {
 	id: string;
 	agent: string;
 	provider: string;
+	kind: string;
 	team: string | null;
 	channel: string;
 	actor: string | null;
@@ -21,6 +22,7 @@ export type Message = {
 	id: string;
 	threadId: string;
 	provider: string;
+	kind: string;
 	providerEventId: string | null;
 	role: string;
 	actor: string | null;
@@ -40,6 +42,7 @@ export type Turn = {
 	resultMessageId: string | null;
 	agent: string;
 	provider: string;
+	kind: string;
 	channel: string;
 	actor: string | null;
 	trace: string | null;
@@ -135,6 +138,7 @@ export interface Threads {
 	getOrCreate(input: {
 		agent: string;
 		provider: string;
+		kind?: string;
 		team?: string;
 		channel: string;
 		actor?: string;
@@ -158,6 +162,7 @@ export interface Messages {
 	create(input: {
 		threadId: string;
 		provider: string;
+		kind?: string;
 		providerEventId?: string;
 		role: string;
 		actor?: string;
@@ -169,6 +174,7 @@ export interface Messages {
 	createOnce(input: {
 		threadId: string;
 		provider: string;
+		kind?: string;
 		providerEventId?: string;
 		role: string;
 		actor?: string;
@@ -195,6 +201,7 @@ export interface Turns {
 		inputMessageId: string;
 		agent: string;
 		provider: string;
+		kind?: string;
 		channel: string;
 		actor?: string;
 		trace?: string;
@@ -257,6 +264,7 @@ export interface Approvals {
 export interface Locks {
 	acquire(input: { key: string; owner: string; ttlMs?: number }): Promise<Lock | undefined>;
 	get(key: string): Promise<Lock | undefined>;
+	refresh(input: { key: string; owner: string; ttlMs?: number }): Promise<Lock | undefined>;
 	release(input: { key: string; owner: string }): Promise<void>;
 	clear?(input?: { prefix?: string }): Promise<number>;
 }
