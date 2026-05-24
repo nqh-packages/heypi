@@ -43,8 +43,7 @@ HEYPI_TELEGRAM_USERS=
 
 Leave the `HEYPI_TELEGRAM_*` allowlists empty to accept every update Telegram delivers. Set comma-separated IDs to restrict which chats or users may trigger the agent.
 
-This example enables `streaming: true`, so Telegram replies are posted as draft messages and edited while Pi emits text. Delivery pacing and rate-limit retries use heypi's defaults.
-Because streaming is enabled, Telegram suppresses the separate `Working...` progress message to avoid duplicate visible replies.
+This example enables `streaming: true`. See [`../../docs/CHAT.md`](../../docs/CHAT.md) for shared chat defaults, streaming, approvals, cancel, and busy-thread behavior.
 
 Check setup and discover a target chat:
 

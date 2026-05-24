@@ -45,8 +45,7 @@ Leave the `HEYPI_SLACK_*` allowlists empty to accept every event Slack delivers.
 
 `SLACK_SIGNING_SECRET` is only required for HTTP mode. Socket Mode uses `SLACK_APP_TOKEN`.
 
-This example enables `streaming: true`, so Slack replies are posted as draft messages and edited while Pi emits text. Delivery pacing and rate-limit retries use heypi's defaults.
-Slack still shows the immediate `Working...` progress message while work is starting. Top-level channel messages also get an `eyes` reaction; thread replies and approval continuations do not. Approval buttons update their original message immediately after approval or rejection while keeping the approved/rejected command details visible.
+This example enables `streaming: true`. See [`../../docs/CHAT.md`](../../docs/CHAT.md) for shared chat defaults, streaming, approvals, cancel, and busy-thread behavior.
 
 Check setup:
 
@@ -120,6 +119,6 @@ slack({
 });
 ```
 
-With these defaults, top-level channel messages require a mention, thread replies do not, and Slack shows an immediate `Working...` progress message while the model runs.
+With these defaults, top-level channel messages require a mention and thread replies do not.
 
 In Slack app settings, set Event Subscriptions and Interactivity URLs to `https://<host>/slack/events`, or to the custom `path` you configured.

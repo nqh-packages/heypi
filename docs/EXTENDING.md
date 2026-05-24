@@ -197,7 +197,7 @@ const deploy = tool<{ command: string }>({
 ## Other Extension Points
 
 - Custom adapters implement the `Adapter` interface.
-- Custom stores implement the `Store` interface.
+- Custom stores implement the `Store` interface. Production shared stores must provide durable `locks`; scheduler-capable stores also need `jobs` and `jobRuns`. Implement `transaction()` when multiple repository updates must commit atomically.
 - Custom attachment stores implement `AttachmentStore` and are configured with `attachments: { store }`.
 - Attachment processing is configured with `attachments.process`; document conversion is optional and should run through a local converter with byte, time, and output limits.
 - Runtime behavior is configured through `runtime`, including `justBash`, `hostEnv`, timeouts, concurrency, and file limits.

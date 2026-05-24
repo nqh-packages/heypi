@@ -134,7 +134,6 @@ const app = createHeypi({
 			allow: { chats: list("HEYPI_TELEGRAM_CHATS"), users: list("HEYPI_TELEGRAM_USERS") },
 			trigger: "mention",
 			streaming: true,
-			progress: { message: "Working..." },
 		}),
 	],
 	agent: agentFrom("./examples/telegram-workout/agent", {

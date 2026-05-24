@@ -35,6 +35,8 @@ The current production runtime target is a hosted Node process. HTTP adapters re
 
 `src/app.ts` is composition only. It wires the store, runtime, call runner, Pi agent, handler, adapters, attachments, and scheduler. It owns startup and shutdown sequencing, but does not contain provider, model, store, or tool behavior.
 
+On `app.stop()`, heypi stops the scheduler and adapters, waits for active runs to drain, then cancels survivors after the configured drain timeout. The app-level lock prevents two processes with the same store from running the same agent at once.
+
 ### Config API
 
 `src/config.ts` defines the public app configuration and the `agentFrom()` folder convention:

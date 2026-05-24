@@ -54,52 +54,9 @@ telegram({
 });
 ```
 
-Defaults:
+Telegram-specific defaults: `chats` applies to groups/channels only, and forum topic replies use `threadTrigger`.
 
-- omitted `allow` accepts all delivered updates
-- omitted `chats` or `users` accepts all delivered updates for that dimension
-- `chats` applies to groups/channels only
-- `dms` defaults to `true`; set `dms: false` to drop private chats
-- `trigger` defaults to `"mention"` for groups
-- `trigger: "message"` makes every allowed group message run the agent
-- accepted private chats always run the agent
-- Telegram forum topic replies do not need to mention the bot by default
-- `threadTrigger` defaults to `"message"` for forum topics; set `threadTrigger: "mention"` to require a mention in follow-up topic replies
-
-`allow.users` controls who may talk to the bot. `approval.approvers` controls who may approve tool calls. `jobs.scope` and `jobs.target` only affect scheduled outbound jobs.
-
-## Streaming And Delivery
-
-```ts
-telegram({
-  token: process.env.TELEGRAM_BOT_TOKEN!,
-  streaming: true,
-});
-```
-
-`streaming` is off by default. Use `true` for sensible defaults, or pass `{ intervalMs, minChars, maxFailures }` to tune draft edits. Telegram progress defaults to an immediate `Working...` message when streaming is off. Progress messages are suppressed while streaming is active to avoid duplicate visible replies. Set `progress: false` to disable progress.
-
-Same-thread messages received while the bot is already working use the global `concurrency.busy` policy. The default is `steer`: Telegram receives a public topic/chat acknowledgement, the message is injected into the active Pi session, and the original `Working...` message stays in place until it is deleted at completion. The final answer is posted at the bottom of the thread. Use `followUp` to queue the message for after the active assistant response, or `reject` to ask the user to send it again later. Pending approvals reject new asks until the approval is resolved.
-
-Run cancellation is restricted to the user who started the run, plus configured `approval.approvers`. Unauthorized cancel clicks are shown as private callback alerts.
-
-Telegram delivery calls are serialized by default. Provider rate limits are retried with backoff. Ambiguous timeouts are not retried for non-idempotent sends such as new messages or file uploads. Most apps do not need to configure this. If Telegram needs slower pacing, set `delivery: { intervalMs: 500 }`; use `delivery: false` only for development or custom transport control.
-
-## Approvals
-
-Approval cards use Telegram inline buttons. Approved and rejected actions edit the original approval message, keep the approval details visible, and remove the buttons:
-
-```text
-✅ Approval `approval-id` approved by @alice.
-```
-
-```text
-⛔ Approval `approval-id` rejected by @alice.
-```
-
-Private failure paths, such as unauthorized approval attempts, are shown as callback alerts and are not prefixed as successful approvals.
-
-Expired approval clicks keep the approval details visible, mark the approval expired, and remove the buttons.
+See [`CHAT.md`](CHAT.md) for shared allow defaults, streaming, busy-thread behavior, approvals, cancel, and delivery.
 
 ## Groups
 
