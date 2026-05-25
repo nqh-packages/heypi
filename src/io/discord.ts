@@ -255,7 +255,7 @@ async function handleMessage(input: {
 			},
 		},
 		sendError: async () => {
-			const text = userError("handler");
+			const text = userError("handler", input.start.messages?.error);
 			const edited = await pending.update({ text });
 			await sendTextChunks({
 				channel: msg.channel,
@@ -319,7 +319,19 @@ async function handleInteraction(input: {
 			replace: action.kind === "approve" || action.kind === "deny" ? replace : undefined,
 		});
 		if (!out) return;
-		const target = out.private ? await interaction.user.createDM() : interaction.channel;
+		if (out.private) {
+			if (out.replaceOriginal) {
+				await interaction.editReply({
+					content: out.text,
+					embeds: [],
+					components: [],
+				});
+				return;
+			}
+			await interaction.followUp({ content: out.text, ephemeral: true }).catch(() => undefined);
+			return;
+		}
+		const target = interaction.channel;
 		if (!target) return;
 		if (acknowledged) {
 			await sendDiscordOutput({
@@ -373,7 +385,9 @@ async function handleInteraction(input: {
 				error: errorMessage(error),
 			}),
 		);
-		await interaction.followUp({ content: userError("handler"), ephemeral: true }).catch(() => undefined);
+		await interaction
+			.followUp({ content: userError("handler", input.start.messages?.error), ephemeral: true })
+			.catch(() => undefined);
 	}
 }
 

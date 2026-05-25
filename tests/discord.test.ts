@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { normalizeApprovalDetails } from "../src/core/approval-view.js";
 import { approvalView, assertDiscordAttachmentUrl, discordAllowed, discordTriggered } from "../src/io/discord.js";
 
 test("Discord allowlists default to accepting delivered messages", () => {
@@ -90,4 +91,31 @@ test("Discord approval view truncates long code details inside a valid code fenc
 	assert.equal(command.value.startsWith("```\n"), true);
 	assert.equal(command.value.endsWith("\n```"), true);
 	assert.equal(command.value.length <= 1024, true);
+});
+
+test("approval details are capped to stay within Discord embed field limits", () => {
+	const details = normalizeApprovalDetails(
+		Array.from({ length: 40 }, (_, index) => ({
+			label: `Detail ${index + 1}`,
+			value: `value ${index + 1}`,
+		})),
+	);
+	const view = approvalView({
+		state: "rejected",
+		actor: "U_REVIEWER",
+		approval: {
+			id: "approval-1",
+			callId: "call-1",
+			command: "tool",
+			runtime: "tool",
+			reason: "Review details.",
+			allowed: [],
+			requestedBy: "U_REQUESTER",
+			details,
+		},
+	});
+
+	assert.ok(view.fields.length <= 25);
+	assert.deepEqual(view.fields.at(-2), { name: "Requested by", value: "<@U_REQUESTER>" });
+	assert.deepEqual(view.fields.at(-3), { name: "Additional details", value: "20 omitted." });
 });

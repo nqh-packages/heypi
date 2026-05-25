@@ -101,7 +101,7 @@ Inbound allowlists and channel membership are adapter concerns. Once an event is
 
 The handler is intentionally the only place where inbound provider messages become durable turns.
 
-When a same-thread ask arrives while a turn holds the thread lock, the handler uses `concurrency.busy`. `steer` and `followUp` persist the inbound message as an audit row, add actor attribution, and enqueue it into the active Pi session through `ActiveRuns`. They do not create a second heypi turn. `reject` returns a public acknowledgement without calling Pi. If a pending approval exists, new asks are rejected until the approval is approved or denied; durable queueing across approvals is intentionally not implemented.
+When a same-thread ask arrives while a turn holds the thread lock, the handler uses `chat.busy`. `steer` and `followUp` persist the inbound message as an audit row, add actor attribution, and enqueue it into the active Pi session through `ActiveRuns`. They do not create a second heypi turn. `reject` returns a public acknowledgement without calling Pi. If a pending approval exists, new asks are rejected until the approval is approved or denied; durable queueing across approvals is intentionally not implemented.
 
 `ActiveRuns` stores the initiating actor and thread for each live run. Cancel requests only abort the run when they come from that initiating actor or a configured approver, and only from the same thread.
 

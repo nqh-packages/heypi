@@ -371,7 +371,8 @@ test("handler scopes approvals by provider team and channel", async () => {
 			text: `approve ${approvalId}`,
 		});
 		assert.equal(wrongTeam?.private, true);
-		assert.match(wrongTeam?.text ?? "", /not found/);
+		assert.equal(wrongTeam?.replaceOriginal, true);
+		assert.match(wrongTeam?.text ?? "", /unavailable/);
 
 		const approved = await handler({
 			trace: "trace-approval-right-team",

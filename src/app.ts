@@ -4,6 +4,7 @@ import type { AppLockConfig, HeypiConfig } from "./config.js";
 import { ActiveRuns } from "./core/active.js";
 import { CallRunner } from "./core/calls.js";
 import { type Logger, logger, message } from "./core/log.js";
+import { normalizeMessages } from "./core/messages.js";
 import { createScheduler } from "./core/scheduler.js";
 import { splitTools } from "./core-tools.js";
 import { runtimeAttachments } from "./io/attachments.js";
@@ -29,6 +30,7 @@ const DEFAULT_DRAIN_MS = 30_000;
 /** Builds a heypi process from code-first config. Starts storage, runtime, handler, and adapters. */
 export function createHeypi(config: HeypiConfig): HeypiApp {
 	const log = config.logger ?? logger;
+	const messages = normalizeMessages(config.messages);
 	const store = config.store ?? sqliteStore({ path: "./heypi.db" });
 	const active = new ActiveRuns();
 	const runtime = createRuntime({
@@ -52,6 +54,7 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 		log,
 		store.transaction,
 		bashConfirm,
+		messages,
 	);
 	for (const tool of agentTools.custom) {
 		const execute = toolRunner(tool);
@@ -64,6 +67,7 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 		messages: store.messages,
 		attachments: config.attachments?.process,
 		logger: log,
+		appMessages: messages,
 	});
 	const handler = createHandler({
 		agentId: config.agent.id,
@@ -71,7 +75,8 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 		callRunner,
 		agent,
 		approval: config.approval,
-		concurrency: config.concurrency,
+		chat: config.chat,
+		messages,
 		active,
 		lockMs: config.runtime.timeoutMs,
 		logger: log,
@@ -116,7 +121,7 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 				jobs: config.jobs?.length ?? 0,
 			});
 			for (const adapter of config.adapters) {
-				const start = { handler, status, logger: log, attachments, http };
+				const start = { handler, status, logger: log, messages, attachments, http };
 				starts.set(adapter, start);
 				await adapter.start(start);
 				started.push(adapter);

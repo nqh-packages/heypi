@@ -193,19 +193,20 @@ Slack is the representative chat-adapter example here. Telegram and Discord use 
 
 ## Streaming And Busy Threads
 
-Configure streaming on each adapter and busy-thread behavior at the app level. See [`docs/CHAT.md`](docs/CHAT.md) for behavior; the global busy-thread copy is configurable:
+Configure streaming on each adapter and busy-thread behavior at the app level. See [`docs/CHAT.md`](docs/CHAT.md) for behavior and the full system-message list:
 
 ```ts
 createHeypi({
 	// ...
-	concurrency: {
+	chat: {
 		busy: "steer", // "steer" | "followUp" | "reject"
-		messages: {
-			busySteer: "Got it. I'll include that.",
-			busyFollowUp: "Got it. I'll handle that next.",
-			busyReject: "I'm still working on the previous message. Send this again after I reply, or use `cancel`.",
-			pendingApprovalReject: "I'm waiting for the pending approval first.",
-		},
+	},
+	messages: {
+		busySteer: "Got it. I'll include that.",
+		busyFollowUp: "Got it. I'll handle that next.",
+		busyReject: "I'm still working on the previous message. Send this again after I reply, or use `cancel`.",
+		pendingApprovalReject: "I'm waiting for the pending approval first.",
+		approvalUnavailable: "That approval is no longer available.",
 	},
 });
 ```

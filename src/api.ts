@@ -9,8 +9,7 @@ export {
 	type AttachmentConfig,
 	agentFrom,
 	type BusyBehavior,
-	type ConcurrencyConfig,
-	type ConcurrencyMessages,
+	type ChatConfig,
 	type DockerConfig,
 	type HeypiConfig,
 	type JustBashConfig,
@@ -20,6 +19,7 @@ export {
 	type RuntimeLimits,
 } from "./config.js";
 export { consoleLogger, type Format, type Level, type Logger } from "./core/log.js";
+export type { AppMessages, AppMessagesConfig } from "./core/messages.js";
 export { classifyCommand, commandConfirm } from "./core/policy.js";
 export type { ApprovalDetail, CommandPolicyConfig, CommandRisk, Confirm, ReplyAttachment } from "./core/types.js";
 export {

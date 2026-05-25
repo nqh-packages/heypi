@@ -1,6 +1,7 @@
 import { type AllMiddlewareArgs, App, HTTPReceiver, type types } from "@slack/bolt";
 import { codeFence } from "../core/approval-view.js";
 import { message as errorMessage, type Logger, userError } from "../core/log.js";
+import type { AppMessages } from "../core/messages.js";
 import { chunkText } from "../render/chunk.js";
 import { type Attachment, type AttachmentStore, type ResolvedAttachment, responseBytes } from "./attachments.js";
 import { runChatMessage } from "./chat-message.js";
@@ -95,6 +96,7 @@ export function slack(input: SlackConfig): Adapter {
 					adapterKind: kind,
 					progress: input.progress,
 					streaming: input.streaming,
+					messages: start.messages,
 				});
 			});
 			bolt.action(DENY, async ({ ack, body, action, client }) => {
@@ -109,6 +111,7 @@ export function slack(input: SlackConfig): Adapter {
 					delivery,
 					provider: name,
 					adapterKind: kind,
+					messages: start.messages,
 				});
 			});
 			bolt.action(CANCEL, async ({ ack, body, action, client }) => {
@@ -123,6 +126,7 @@ export function slack(input: SlackConfig): Adapter {
 					delivery,
 					provider: name,
 					adapterKind: kind,
+					messages: start.messages,
 				});
 			});
 			bolt.action(STATUS, async ({ ack, body, action, client }) => {
@@ -137,6 +141,7 @@ export function slack(input: SlackConfig): Adapter {
 					delivery,
 					provider: name,
 					adapterKind: kind,
+					messages: start.messages,
 				});
 			});
 			bolt.message(async ({ event, client, body }) => {
@@ -303,7 +308,7 @@ export function slack(input: SlackConfig): Adapter {
 						},
 					},
 					sendError: async () => {
-						const text = userError("handler");
+						const text = userError("handler", start.messages?.error);
 						const sent = await pending.update(text);
 						await postPublicChunks({
 							client,
@@ -927,6 +932,7 @@ async function handleAction(input: {
 	adapterKind: string;
 	progress?: SlackConfig["progress"];
 	streaming?: ReplyStreamOption;
+	messages?: AppMessages;
 }): Promise<void> {
 	const value = stringProp(record(input.action), "value");
 	const context = actionContext(input.body);
@@ -1017,6 +1023,20 @@ async function handleAction(input: {
 			await stream?.clear?.();
 			const channel = context.channel;
 			const actor = context.actor;
+			if (out.replaceOriginal && context.message) {
+				await input.delivery.run(
+					() =>
+						input.client.chat.update({
+							channel,
+							ts: context.message as string,
+							text: out.text,
+							blocks: [{ type: "section", text: { type: "mrkdwn", text: out.text } }],
+						}),
+					logContext({ channel }),
+				);
+				input.logger.debug("adapter.send", logContext({ channel: context.channel, update: true }));
+				return;
+			}
 			await postEphemeralChunks({
 				client: input.client,
 				channel,
@@ -1089,12 +1109,13 @@ async function handleAction(input: {
 			}),
 		);
 		if (context.message) {
+			const text = userError("handler", input.messages?.error);
 			await input.client.chat
 				.update({
 					channel: context.channel,
 					ts: context.message,
-					text: userError("handler"),
-					blocks: [{ type: "section", text: { type: "mrkdwn", text: userError("handler") } }],
+					text,
+					blocks: [{ type: "section", text: { type: "mrkdwn", text } }],
 				})
 				.catch(() => undefined);
 		}

@@ -10,6 +10,7 @@ import type {
 	NetworkConfig,
 } from "just-bash";
 import type { Logger } from "./core/log.js";
+import type { AppMessagesConfig } from "./core/messages.js";
 import type { SchedulerConfig } from "./core/scheduler.js";
 import type { AgentToolDefinition } from "./core-tools.js";
 import type { AttachmentProcessingConfig, AttachmentStore } from "./io/attachments.js";
@@ -112,16 +113,8 @@ export type ApprovalConfig = {
 
 export type BusyBehavior = "reject" | "followUp" | "steer";
 
-export type ConcurrencyMessages = {
-	busyReject: string;
-	busyFollowUp: string;
-	busySteer: string;
-	pendingApprovalReject: string;
-};
-
-export type ConcurrencyConfig = {
+export type ChatConfig = {
 	busy?: BusyBehavior;
-	messages?: Partial<ConcurrencyMessages>;
 };
 
 export type AppLockConfig = {
@@ -136,7 +129,8 @@ export type HeypiConfig = {
 	runtime: RuntimeConfig;
 	attachments?: AttachmentConfig;
 	approval?: ApprovalConfig;
-	concurrency?: ConcurrencyConfig;
+	chat?: ChatConfig;
+	messages?: AppMessagesConfig;
 	appLock?: false | AppLockConfig;
 	scheduler?: Omit<SchedulerConfig, "jobs">;
 	jobs?: SchedulerConfig["jobs"];

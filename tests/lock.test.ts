@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CallRunner } from "../src/core/calls.js";
+import { normalizeMessages } from "../src/core/messages.js";
 import { createHandler } from "../src/io/handler.js";
 import { Queue } from "../src/runtime/queue.js";
 import { sqliteStore } from "../src/store/sqlite.js";
@@ -125,6 +126,7 @@ test("handler returns public busy reply when a thread lock is held without an ac
 				ask: async () => ({ text: "should not run" }),
 				continue: async () => ({ text: "should not run" }),
 			},
+			messages: normalizeMessages({ busyReject: "Thread is busy." }),
 		});
 
 		const out = await handler({
@@ -139,7 +141,7 @@ test("handler returns public busy reply when a thread lock is held without an ac
 
 		assert.equal(out?.private, undefined);
 		assert.equal(out?.finalPlacement, "thread");
-		assert.match(out?.text ?? "", /still working/i);
+		assert.equal(out?.text, "Thread is busy.");
 	} finally {
 		await db.cleanup();
 	}

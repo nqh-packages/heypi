@@ -1,4 +1,5 @@
 import type { Attachment } from "../io/attachments.js";
+import type { AppMessages } from "./messages.js";
 
 export type CancelResult = "cancelled" | "not_found" | "unauthorized";
 
@@ -154,10 +155,10 @@ export class ActiveRuns {
 	}
 }
 
-export function cancelReply(result: CancelResult): { text: string; private: true } {
-	if (result === "cancelled") return { text: "Cancelled.", private: true };
-	if (result === "unauthorized") return { text: "You are not allowed to cancel this run.", private: true };
-	return { text: "No active run found for that id.", private: true };
+export function cancelReply(result: CancelResult, messages: AppMessages): { text: string; private: true } {
+	if (result === "cancelled") return { text: messages.cancelled, private: true };
+	if (result === "unauthorized") return { text: messages.cancelUnauthorized, private: true };
+	return { text: messages.cancelNotFound, private: true };
 }
 
 export function isAbortError(error: unknown): boolean {

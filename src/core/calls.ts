@@ -6,6 +6,7 @@ import { isAbortError } from "./active.js";
 import { parseApprovalDetails, serializeApprovalDetails } from "./approval-view.js";
 import { renderCall } from "./format.js";
 import { type Logger, logger } from "./log.js";
+import { type AppMessages, DEFAULT_APP_MESSAGES, renderMessage } from "./messages.js";
 import { assertTransition, parseCallState } from "./state.js";
 import type { ApprovalDetail, ApprovalResolution, Confirm, Intent, Reply, ToolExecute } from "./types.js";
 
@@ -43,6 +44,7 @@ export class CallRunner {
 		private readonly log: Logger = logger,
 		private readonly transaction?: Store["transaction"],
 		private readonly bashConfirm?: Confirm,
+		private readonly messages: AppMessages = DEFAULT_APP_MESSAGES,
 	) {}
 
 	register(tool: string, execute: ToolExecute): void {
@@ -264,7 +266,7 @@ export class CallRunner {
 		onExpired?: (reply: Reply) => Promise<void>,
 	): Promise<Reply> {
 		const approval = await this.approvals.getByChannel(intent.channel, intent.approvalId);
-		if (!approval) return { text: "approval not found", private: true };
+		if (!approval) return staleApproval(this.messages.approvalUnavailable);
 		if (approval.state !== "pending") {
 			this.log.info("approval.already_resolved", {
 				approval: approval.id,
@@ -274,7 +276,12 @@ export class CallRunner {
 				state: approval.state,
 				resolvedBy: approval.resolvedBy ?? undefined,
 			});
-			return { text: `approval already ${approval.state} by ${approval.resolvedBy ?? "unknown"}`, private: true };
+			return staleApproval(
+				renderMessage(this.messages.approvalAlreadyResolved, {
+					state: approval.state,
+					resolvedBy: approval.resolvedBy ?? undefined,
+				}),
+			);
 		}
 		if (!this.canApprove(intent.actor)) {
 			this.log.warn("approval.unauthorized", {
@@ -284,7 +291,12 @@ export class CallRunner {
 				actor: intent.actor,
 				requestedBy: approval.requestedBy ?? undefined,
 			});
-			return renderCall({ callId: approval.callId, state: "unauthorized", approvers: this.approvers() });
+			return renderCall({
+				callId: approval.callId,
+				state: "unauthorized",
+				approvers: this.approvers(),
+				messages: this.messages,
+			});
 		}
 		if (this.expired(approval.expiresAt)) return this.expireApproval(approval, intent.actor, onExpired);
 		const current = await this.calls.get(approval.callId);
@@ -298,7 +310,7 @@ export class CallRunner {
 				actor: intent.actor,
 				state: "resolved",
 			});
-			return { text: "approval already resolved", private: true };
+			return staleApproval(this.messages.approvalResolved);
 		}
 		this.log.info("approval.approved", {
 			approval: approval.id,
@@ -337,7 +349,7 @@ export class CallRunner {
 		onExpired?: (reply: Reply) => Promise<void>,
 	): Promise<Reply> {
 		const approval = await this.approvals.getByChannel(intent.channel, intent.approvalId);
-		if (!approval) return { text: "approval not found", private: true };
+		if (!approval) return staleApproval(this.messages.approvalUnavailable);
 		if (approval.state !== "pending") {
 			this.log.info("approval.already_resolved", {
 				approval: approval.id,
@@ -347,7 +359,12 @@ export class CallRunner {
 				state: approval.state,
 				resolvedBy: approval.resolvedBy ?? undefined,
 			});
-			return { text: `approval already ${approval.state} by ${approval.resolvedBy ?? "unknown"}`, private: true };
+			return staleApproval(
+				renderMessage(this.messages.approvalAlreadyResolved, {
+					state: approval.state,
+					resolvedBy: approval.resolvedBy ?? undefined,
+				}),
+			);
 		}
 		if (!this.canDeny(intent.actor, approval.requestedBy ?? undefined)) {
 			this.log.warn("approval.unauthorized", {
@@ -357,7 +374,12 @@ export class CallRunner {
 				actor: intent.actor,
 				requestedBy: approval.requestedBy ?? undefined,
 			});
-			return renderCall({ callId: approval.callId, state: "unauthorized", approvers: this.approvers() });
+			return renderCall({
+				callId: approval.callId,
+				state: "unauthorized",
+				approvers: this.approvers(),
+				messages: this.messages,
+			});
 		}
 		if (this.expired(approval.expiresAt)) return this.expireApproval(approval, intent.actor, onExpired);
 		const current = await this.calls.get(approval.callId);
@@ -371,7 +393,7 @@ export class CallRunner {
 				actor: intent.actor,
 				state: "resolved",
 			});
-			return { text: "approval already resolved", private: true };
+			return staleApproval(this.messages.approvalResolved);
 		}
 		this.log.info("approval.denied", {
 			approval: approval.id,
@@ -440,7 +462,7 @@ export class CallRunner {
 				actor,
 				state: "resolved",
 			});
-			return { text: "Approval already resolved.", private: true };
+			return { text: this.messages.approvalResolved, private: true };
 		}
 		this.log.info("approval.expired", {
 			approval: approval.id,
@@ -453,9 +475,7 @@ export class CallRunner {
 		const summary = current ? this.approvalSummary(approval, current, "expired") : undefined;
 		const reply = {
 			...(summary ?? {}),
-			text: [summary?.text, "⏱️ Approval expired. Ask me to try again if this is still needed."]
-				.filter(Boolean)
-				.join("\n\n"),
+			text: [summary?.text, `⏱️ ${this.messages.approvalExpired}`].filter(Boolean).join("\n\n"),
 			approvalResolution: "expired" as const,
 		};
 		if (onExpired) {
@@ -472,7 +492,7 @@ export class CallRunner {
 				});
 			}
 		}
-		return { text: "Approval expired. Ask me to try again if this is still needed.", private: true };
+		return { text: this.messages.approvalExpired, private: true };
 	}
 
 	private approvalSummary(
@@ -515,6 +535,10 @@ export class CallRunner {
 			ms: row.ms ?? undefined,
 		});
 	}
+}
+
+function staleApproval(text: string): Reply {
+	return { text, private: true, replaceOriginal: true };
 }
 
 function confirm(

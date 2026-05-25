@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CallRunner } from "../src/core/calls.js";
 import type { Logger } from "../src/core/log.js";
+import { normalizeMessages } from "../src/core/messages.js";
 import { commandConfirm } from "../src/core/policy.js";
 import type { CallState } from "../src/core/types.js";
 import { Queue } from "../src/runtime/queue.js";
@@ -489,11 +490,60 @@ test("resolved approval logs approval.already_resolved", async () => {
 	});
 
 	assert.equal(resolved.private, true);
+	assert.equal(resolved.replaceOriginal, true);
 	assert.match(resolved.text, /already denied/);
 	assert.equal(
 		events.some((event) => event.event === "approval.already_resolved"),
 		true,
 	);
+});
+
+test("missing approval asks adapters to replace stale approval surfaces", async () => {
+	const callRunner = new CallRunner(
+		new FakeCalls(),
+		new FakeApprovals(),
+		new Queue({ maxConcurrent: 1, maxPerChat: 1 }),
+		runtime(),
+		{ approvers: ["U_ALLOWED"] },
+		noLogger(),
+		undefined,
+		commandConfirm(),
+	);
+
+	const missing = await callRunner.handle({
+		kind: "approve",
+		approvalId: "approval-missing",
+		channel: "C1",
+		actor: "U_ALLOWED",
+	});
+
+	assert.equal(missing.private, true);
+	assert.equal(missing.replaceOriginal, true);
+	assert.match(missing.text, /Approval unavailable/);
+});
+
+test("missing approval uses configured system copy", async () => {
+	const callRunner = new CallRunner(
+		new FakeCalls(),
+		new FakeApprovals(),
+		new Queue({ maxConcurrent: 1, maxPerChat: 1 }),
+		runtime(),
+		{ approvers: ["U_ALLOWED"] },
+		noLogger(),
+		undefined,
+		commandConfirm(),
+		normalizeMessages({ approvalUnavailable: "That approval is gone." }),
+	);
+
+	const missing = await callRunner.handle({
+		kind: "deny",
+		approvalId: "approval-missing",
+		channel: "C1",
+		actor: "U_ALLOWED",
+	});
+
+	assert.equal(missing.text, "That approval is gone.");
+	assert.equal(missing.replaceOriginal, true);
 });
 
 test("approved tool call returns continuation metadata when it came from Pi", async () => {

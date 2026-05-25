@@ -38,7 +38,7 @@ Provider differences:
 
 ## Busy Threads
 
-Same-thread messages while a turn is active use `concurrency.busy`:
+Same-thread messages while a turn is active use `chat.busy`:
 
 - `steer`: default; inject the message into the active Pi session
 - `followUp`: add it after the active assistant response settles
@@ -47,6 +47,32 @@ Same-thread messages while a turn is active use `concurrency.busy`:
 For `steer` and `followUp`, heypi stores the inbound message, publicly acknowledges it, keeps the original progress marker as a temporary anchor, deletes that marker at completion, and posts the final answer at the bottom of the thread.
 
 Pending approvals reject new asks until the approval is approved or denied.
+
+## System Messages
+
+Provider labels, card headings, button text, and help text are fixed. Bot outcome copy is configurable with top-level `messages`:
+
+```ts
+createHeypi({
+	chat: { busy: "steer" },
+	messages: {
+		busySteer: "Got it. I'll include that.",
+		busyFollowUp: "Got it. I'll handle that next.",
+		busyReject: "I'm still working on the previous message. Send this again after I reply, or use `cancel`.",
+		pendingApprovalReject: "I'm waiting for the pending approval first.",
+		approvalUnavailable: "Approval unavailable. Ask me to try again if this is still needed.",
+		approvalAlreadyResolved: ({ state, resolvedBy }) => `Approval already ${state} by ${resolvedBy ?? "unknown"}.`,
+		approvalResolved: "Approval already resolved.",
+		approvalExpired: "Approval expired. Ask me to try again if this is still needed.",
+		approvalUnauthorized: "You are not allowed to resolve this action.",
+		cancelled: "Cancelled.",
+		cancelUnauthorized: "You are not allowed to cancel this run.",
+		cancelNotFound: "No active run found for that id.",
+		approvalsUnauthorized: "You are not allowed to view pending approvals.",
+		error: "Something went wrong. Ask an admin to check the server logs.",
+	},
+});
+```
 
 ## Approvals And Cancel
 
@@ -61,9 +87,9 @@ status <call-id>
 cancel <turn-id-or-trace>
 ```
 
-Slack, Telegram, and Discord also render native approval buttons. Approve/reject actions edit the original approval message, keep the approval details visible, and remove the buttons.
+Slack, Telegram, and Discord also render native approval buttons. Approve/reject actions edit the original approval message, keep the approval details visible, and remove the buttons. Stale approval buttons also replace the original message with an unavailable/already-resolved notice.
 
-Approval cards show a reason plus optional structured details. Details are label/value fields; code details render as code blocks where the provider supports it. The shared runtime supplies core bash command details, and custom tools can provide domain-specific fields such as target host, service, or request scope.
+Approval cards show a reason plus optional structured details. Details are label/value fields; code details render as code blocks where the provider supports it. Details are capped centrally to stay within provider card limits. The shared runtime supplies core bash command details, and custom tools can provide domain-specific fields such as target host, service, or request scope.
 
 Permissions:
 

@@ -30,6 +30,7 @@ export type Reply = {
 	silent?: boolean;
 	approval?: ApprovalPrompt;
 	approvalResolution?: ApprovalResolution;
+	replaceOriginal?: boolean;
 	attachments?: ReplyAttachment[];
 	continuation?: ToolContinuation;
 };

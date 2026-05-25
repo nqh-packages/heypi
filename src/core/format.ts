@@ -1,5 +1,6 @@
 import { codeFence } from "./approval-view.js";
 import { redact } from "./log.js";
+import type { AppMessages } from "./messages.js";
 import type { ApprovalDetail, Reply } from "./types.js";
 
 export type ApprovalSummary = {
@@ -109,6 +110,7 @@ export function renderCall(input: {
 	approvers?: string[];
 	requestedBy?: string;
 	details?: ApprovalDetail[];
+	messages?: AppMessages;
 }): Reply {
 	if (input.state === "pending_approval") {
 		const command = input.command ? redact(input.command) : undefined;
@@ -139,7 +141,7 @@ export function renderCall(input: {
 	if (input.state === "unauthorized") {
 		return {
 			text: [
-				"You are not allowed to resolve this action.",
+				input.messages?.approvalUnauthorized ?? "You are not allowed to resolve this action.",
 				input.approvers?.length ? `Allowed approvers: ${input.approvers.join(", ")}` : undefined,
 			]
 				.filter((line): line is string => typeof line === "string")

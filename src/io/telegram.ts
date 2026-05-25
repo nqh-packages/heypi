@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { codeFence } from "../core/approval-view.js";
 import { message as errorMessage, type Logger, userError } from "../core/log.js";
+import type { AppMessages } from "../core/messages.js";
 import { chunkText } from "../render/chunk.js";
 import { type Attachment, type AttachmentStore, type ResolvedAttachment, responseBytes } from "./attachments.js";
 import { runChatMessage } from "./chat-message.js";
@@ -175,6 +176,7 @@ async function handleUpdate(input: {
 			handler: input.start.handler,
 			logger: input.start.logger,
 			store: input.start.attachments,
+			messages: input.start.messages,
 			callback,
 			delivery: input.delivery,
 			provider: input.provider,
@@ -309,7 +311,7 @@ async function handleUpdate(input: {
 			},
 		},
 		sendError: async () => {
-			const text = userError("handler");
+			const text = userError("handler", input.start.messages?.error);
 			const edited = await pending.update({ text });
 			await sendChunks({
 				client: input.client,
@@ -329,6 +331,7 @@ async function handleCallback(input: {
 	handler: Handler;
 	logger: Logger;
 	store?: AttachmentStore;
+	messages?: AppMessages;
 	callback: TelegramCallbackQuery;
 	delivery: DeliveryQueue;
 	provider: string;
@@ -408,6 +411,19 @@ async function handleCallback(input: {
 			return;
 		}
 		if (out.private) {
+			if (out.replaceOriginal) {
+				await answer();
+				await input.delivery.run(
+					() =>
+						input.client.editMessageText({
+							chat_id: msg.chat.id,
+							message_id: msg.message_id,
+							text: firstChunk(out.text, false),
+						}),
+					context(),
+				);
+				return;
+			}
 			answered = true;
 			await input.delivery.run(
 				() =>
@@ -475,7 +491,7 @@ async function handleCallback(input: {
 			() =>
 				input.client.answerCallbackQuery({
 					callback_query_id: input.callback.id,
-					text: userError("handler"),
+					text: userError("handler", input.messages?.error),
 					show_alert: true,
 				}),
 			context(),

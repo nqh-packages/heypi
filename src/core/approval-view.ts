@@ -2,18 +2,33 @@ import type { ApprovalDetail } from "./types.js";
 
 export const APPROVAL_DETAIL_VALUE_LIMIT = 1800;
 export const APPROVAL_DETAIL_LABEL_LIMIT = 80;
+export const APPROVAL_DETAIL_COUNT_LIMIT = 20;
 
 export function normalizeApprovalDetails(input: unknown): ApprovalDetail[] | undefined {
 	if (!Array.isArray(input)) return undefined;
 	const details: ApprovalDetail[] = [];
+	let omitted = 0;
 	for (const item of input) {
 		if (!item || typeof item !== "object") continue;
 		const record = item as Record<string, unknown>;
 		if (typeof record.label !== "string" || typeof record.value !== "string") continue;
+		const label = truncate(record.label.trim(), APPROVAL_DETAIL_LABEL_LIMIT);
+		if (!label) continue;
+		if (details.length >= APPROVAL_DETAIL_COUNT_LIMIT) {
+			omitted++;
+			continue;
+		}
 		details.push({
-			label: truncate(record.label.trim(), APPROVAL_DETAIL_LABEL_LIMIT),
+			label,
 			value: truncate(record.value, APPROVAL_DETAIL_VALUE_LIMIT),
 			format: record.format === "code" ? "code" : "text",
+		});
+	}
+	if (omitted) {
+		details.push({
+			label: "Additional details",
+			value: `${omitted} omitted.`,
+			format: "text",
 		});
 	}
 	return details.length ? details : [];

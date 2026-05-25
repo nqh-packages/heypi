@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type { ApprovalConfig, ConcurrencyConfig, ConcurrencyMessages, ModelConfig } from "../config.js";
+import type { ApprovalConfig, ChatConfig, ModelConfig } from "../config.js";
 import { ActiveRuns, cancelReply, isAbortError } from "../core/active.js";
 import type { CallRunner } from "../core/calls.js";
 import { helpReply, renderApprovals, renderThreadStatus } from "../core/format.js";
 import { normalizeText, parseIntent } from "../core/intent.js";
 import { type Logger, logError, logger, message, redact, userError } from "../core/log.js";
+import { type AppMessages, DEFAULT_APP_MESSAGES } from "../core/messages.js";
 import type { ApprovalPrompt, ApprovalResolution, Intent, ReplyAttachment } from "../core/types.js";
 import type { Agent } from "../runtime/agent.js";
 import { transaction } from "../store/transaction.js";
@@ -41,6 +42,7 @@ export type Outbound = {
 	silent?: boolean;
 	approval?: ApprovalPrompt;
 	approvalResolution?: ApprovalResolution;
+	replaceOriginal?: boolean;
 	attachments?: ReplyAttachment[];
 	finalPlacement?: "progress" | "thread";
 };
@@ -70,6 +72,7 @@ export type AdapterStart = {
 	handler: Handler;
 	status?: Status;
 	logger: Logger;
+	messages?: AppMessages;
 	attachments?: AttachmentStore;
 	http?: HttpRegistrar;
 };
@@ -121,7 +124,8 @@ export function createHandler(input: {
 	callRunner: CallRunner;
 	agent: Agent;
 	approval?: ApprovalConfig;
-	concurrency?: ConcurrencyConfig;
+	chat?: ChatConfig;
+	messages?: AppMessages;
 	active?: ActiveRuns;
 	lockMs?: number;
 	logger?: Logger;
@@ -129,7 +133,8 @@ export function createHandler(input: {
 	const agentId = input.agentId ?? "default";
 	const log = input.logger ?? logger;
 	const active = input.active ?? new ActiveRuns();
-	const concurrency = normalizeConcurrency(input.concurrency);
+	const chat = normalizeChat(input.chat);
+	const messages = input.messages ?? DEFAULT_APP_MESSAGES;
 	return async (msg) => {
 		const trace = msg.trace ?? randomUUID();
 		const rawText = normalizeText(msg.text);
@@ -161,13 +166,13 @@ export function createHandler(input: {
 		const lockOwner = `${trace}:${randomUUID()}`;
 		if (intent.kind === "cancel") {
 			const target = active.info(intent.id);
-			if (!target || target.threadId !== thread.id) return cancelReply("not_found");
-			if (!canCancelRun(input.approval, msg.actor, target.actor)) return cancelReply("unauthorized");
-			return cancelReply(active.cancel(intent.id));
+			if (!target || target.threadId !== thread.id) return cancelReply("not_found", messages);
+			if (!canCancelRun(input.approval, msg.actor, target.actor)) return cancelReply("unauthorized", messages);
+			return cancelReply(active.cancel(intent.id), messages);
 		}
 		if (intent.kind === "approvals") {
 			if (!canListApprovals(input.approval, msg.actor)) {
-				return { text: "You are not allowed to view pending approvals.", private: true };
+				return { text: messages.approvalsUnauthorized, private: true };
 			}
 			const all = await input.store.approvals.listPending({ limit: 25 });
 			const rows = all.filter((row) => approvalVisible(row, input.approval, msg, thread.id));
@@ -204,7 +209,7 @@ export function createHandler(input: {
 				thread: msg.thread,
 				event: msg.eventId,
 			});
-			if (intent.kind === "ask" && concurrency.busy !== "reject" && active.has(lockKey)) {
+			if (intent.kind === "ask" && chat.busy !== "reject" && active.has(lockKey)) {
 				const created = await input.store.messages.createOnce({
 					threadId: thread.id,
 					provider: msg.provider,
@@ -219,16 +224,16 @@ export function createHandler(input: {
 				if (!created.inserted) return undefined;
 				const queued = await active.enqueue(
 					lockKey,
-					concurrency.busy,
+					chat.busy,
 					attributedMessage(msg, messageText),
 					msg.attachments,
 				);
 				if (queued === "queued") {
-					const key = concurrency.busy === "steer" ? "busySteer" : "busyFollowUp";
-					return { text: concurrency.messages[key], finalPlacement: "thread" };
+					const text = chat.busy === "steer" ? messages.busySteer : messages.busyFollowUp;
+					return { text, finalPlacement: "thread" };
 				}
 			}
-			return { text: concurrency.messages.busyReject, finalPlacement: "thread" };
+			return { text: messages.busyReject, finalPlacement: "thread" };
 		}
 		let turn: Awaited<ReturnType<Store["turns"]["create"]>> | undefined;
 		let run: ReturnType<ActiveRuns["start"]> | undefined;
@@ -245,7 +250,7 @@ export function createHandler(input: {
 						thread: thread.id,
 						approval: pending.id,
 					});
-					return { text: concurrency.messages.pendingApprovalReject, finalPlacement: "thread" };
+					return { text: messages.pendingApprovalReject, finalPlacement: "thread" };
 				}
 			}
 			const created = await transaction(input.store, async (store) => {
@@ -408,7 +413,7 @@ export function createHandler(input: {
 				threadId: thread.id,
 				provider: msg.provider,
 				kind: msg.kind ?? msg.provider,
-				text: userError("handler"),
+				text: userError("handler", messages.error),
 				state: "failed",
 			});
 		} finally {
@@ -487,6 +492,7 @@ async function finishReplyTurn(input: {
 		silent?: boolean;
 		approval?: ApprovalPrompt;
 		approvalResolution?: ApprovalResolution;
+		replaceOriginal?: boolean;
 		attachments?: ReplyAttachment[];
 	};
 	aborted: boolean;
@@ -521,6 +527,7 @@ async function finishReplyTurn(input: {
 		silent: input.reply.silent,
 		approval: input.reply.approval,
 		approvalResolution: input.reply.approvalResolution,
+		replaceOriginal: input.reply.replaceOriginal,
 		attachments: input.reply.attachments,
 		finalPlacement: input.finalPlacement,
 	};
@@ -589,19 +596,11 @@ function approvalVisible(
 	return row.channel.startsWith(`${msg.provider}:${msg.team ?? ""}:`);
 }
 
-type NormalizedConcurrency = Required<Omit<ConcurrencyConfig, "messages">> & { messages: ConcurrencyMessages };
+type NormalizedChat = Required<ChatConfig>;
 
-const DEFAULT_CONCURRENCY_MESSAGES: ConcurrencyMessages = {
-	busyReject: "I'm still working on the previous message. Send this again after I reply, or use `cancel`.",
-	busyFollowUp: "Got it. I'll handle that next.",
-	busySteer: "Got it. I'll include that.",
-	pendingApprovalReject: "I'm waiting for the pending approval first.",
-};
-
-function normalizeConcurrency(input: ConcurrencyConfig | undefined): NormalizedConcurrency {
+function normalizeChat(input: ChatConfig | undefined): NormalizedChat {
 	return {
 		busy: input?.busy ?? "steer",
-		messages: { ...DEFAULT_CONCURRENCY_MESSAGES, ...(input?.messages ?? {}) },
 	};
 }
 

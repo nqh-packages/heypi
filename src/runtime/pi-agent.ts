@@ -13,6 +13,7 @@ import type { AgentConfig, AgentContextBlock, AgentContextInput, ModelConfig } f
 import { normalizeApprovalDetails } from "../core/approval-view.js";
 import type { CallRunner } from "../core/calls.js";
 import { type Logger, logError, logger, redact, userError } from "../core/log.js";
+import { type AppMessages, DEFAULT_APP_MESSAGES } from "../core/messages.js";
 import type { ApprovalPrompt, ToolContinuation } from "../core/types.js";
 import { splitTools } from "../core-tools.js";
 import { type AttachmentProcessingConfig, attachmentInput } from "../io/attachments.js";
@@ -34,6 +35,7 @@ export type PiAgentInput = {
 	messages: Messages;
 	attachments?: AttachmentProcessingConfig;
 	logger?: Logger;
+	appMessages?: AppMessages;
 };
 
 export class PiAgent implements Agent {
@@ -194,7 +196,7 @@ export class PiAgent implements Agent {
 				actor: req.actor,
 				error,
 			});
-			return { text: userError("model") };
+			return { text: userError("model", this.input.appMessages?.error ?? DEFAULT_APP_MESSAGES.error) };
 		}
 		if (!out.trim()) out = lastAssistantText(session);
 		const messages = session.messages.slice(generatedAt) as StoredMessage[];
@@ -210,7 +212,7 @@ export class PiAgent implements Agent {
 				actor: req.actor,
 				error: "empty model response",
 			});
-			return { text: userError("model") };
+			return { text: userError("model", this.input.appMessages?.error ?? DEFAULT_APP_MESSAGES.error) };
 		}
 		const text = out.trim();
 		const silent = silentReply(text);
