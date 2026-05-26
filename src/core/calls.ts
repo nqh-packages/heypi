@@ -17,6 +17,7 @@ export type CallContext = {
 	turn?: string;
 	message?: string;
 	toolCall?: string;
+	runtimeScope?: string;
 };
 
 type CallBase = {
@@ -39,7 +40,7 @@ export class CallRunner {
 		private readonly calls: Calls,
 		private readonly approvals: Approvals,
 		private readonly queue: Queue,
-		private readonly runtime: Runtime,
+		private readonly runtime: Runtime | ((scope?: string) => Runtime),
 		private readonly approval: ApprovalConfig = {},
 		private readonly log: Logger = logger,
 		private readonly transaction?: Store["transaction"],
@@ -71,7 +72,8 @@ export class CallRunner {
 		context: CallContext = {},
 		signal?: AbortSignal,
 	): Promise<Reply> {
-		if (!this.runtime.bash) throw new Error(`runtime ${this.runtime.name} does not support bash`);
+		const runtime = this.runtimeFor(context.runtimeScope);
+		if (!runtime.bash) throw new Error(`runtime ${runtime.name} does not support bash`);
 		const confirmation = confirm(this.bashConfirm, { command });
 		const details = normalizeConfirmationDetails(confirmation?.details);
 		const base = {
@@ -79,8 +81,8 @@ export class CallRunner {
 			actor,
 			tool: "bash",
 			command,
-			args: { command },
-			runtime: this.runtime.name,
+			args: compact({ command, runtimeScope: context.runtimeScope }),
+			runtime: runtime.name,
 			details,
 			policyReason: confirmation?.policyReason ?? confirmation?.reason ?? "tool default",
 			context,
@@ -88,7 +90,7 @@ export class CallRunner {
 		if (confirmation?.block) return this.block(base, confirmation.block);
 		if (confirmation) return this.requestApproval(base, confirmation.reason);
 		const row = await this.createCall(base, "running");
-		return this.executeBash(row.id, channel, command, context, signal);
+		return this.executeBash(row.id, channel, actor, command, context, signal);
 	}
 
 	async tool(input: {
@@ -115,7 +117,15 @@ export class CallRunner {
 		if (confirmation?.block) return this.block(base, confirmation.block);
 		if (confirmation) return this.requestApproval(base, confirmation.reason);
 		const row = await this.createCall(base, "running");
-		return this.executeTool(row.id, input.name, input.args, input.execute, input.context ?? {}, input.signal);
+		return this.executeTool(
+			row.id,
+			input.name,
+			input.actor,
+			input.args,
+			input.execute,
+			input.context ?? {},
+			input.signal,
+		);
 	}
 
 	private async block(input: CallBase, reason: string): Promise<Reply> {
@@ -178,16 +188,18 @@ export class CallRunner {
 	private async executeBash(
 		callId: string,
 		channel: string,
+		actor: string | null | undefined,
 		command: string,
 		context: CallContext,
 		signal?: AbortSignal,
 	): Promise<Reply> {
-		this.log.info("call.start", { ...context, channel, call: callId, tool: "bash", runtime: this.runtime.name });
+		const runtime = this.runtimeFor(context.runtimeScope);
+		this.log.info("call.start", { ...context, channel, call: callId, tool: "bash", runtime: runtime.name });
 		let out: { result: { code: number; out: string; err: string; ms: number }; waitMs: number };
 		try {
 			out = await this.queue.submit(
 				channel,
-				() => this.runtime.bash?.({ command, signal }) ?? missingBash(this.runtime.name),
+				() => runtime.bash?.({ command, signal }) ?? missingBash(runtime.name),
 				signal,
 			);
 		} catch (error) {
@@ -197,7 +209,7 @@ export class CallRunner {
 			this.log.info("call.end", { ...context, channel, call: callId, tool: "bash", state: "cancelled", code: 130 });
 			return {
 				...renderCall({ callId, state: "cancelled", ...result }),
-				continuation: continuation(callId, "bash", context, "", err, true),
+				continuation: continuation(callId, "bash", context, actor, "", err, true),
 			};
 		}
 		const state = signal?.aborted ? "cancelled" : out.result.code === 0 ? "done" : "failed";
@@ -215,13 +227,14 @@ export class CallRunner {
 		});
 		return {
 			...renderCall({ callId, state, ...out.result }),
-			continuation: continuation(callId, "bash", context, out.result.out, out.result.err, state !== "done"),
+			continuation: continuation(callId, "bash", context, actor, out.result.out, out.result.err, state !== "done"),
 		};
 	}
 
 	private async executeTool(
 		callId: string,
 		tool: string,
+		actor: string | null | undefined,
 		args: Record<string, unknown>,
 		execute: ToolExecute,
 		context: CallContext,
@@ -243,7 +256,7 @@ export class CallRunner {
 			this.log.info("call.end", { ...context, call: callId, tool, state: "done", code: 0, ms });
 			return {
 				...renderCall({ callId, state: "done", code: 0, out: out.out, err: out.err ?? "", ms }),
-				continuation: continuation(callId, tool, context, out.out, out.err ?? "", false),
+				continuation: continuation(callId, tool, context, actor, out.out, out.err ?? "", false),
 			};
 		} catch (error) {
 			const ms = Date.now() - start;
@@ -254,7 +267,7 @@ export class CallRunner {
 			this.log.info("call.end", { ...context, call: callId, tool, state, code, ms });
 			return {
 				...renderCall({ callId, state, code, out: "", err, ms }),
-				continuation: continuation(callId, tool, context, "", err, true),
+				continuation: continuation(callId, tool, context, actor, "", err, true),
 			};
 		}
 	}
@@ -335,13 +348,30 @@ export class CallRunner {
 			}
 		}
 		if (current.tool === "bash") {
-			if (approval.runtime !== this.runtime.name) throw new Error(`approval runtime mismatch: ${approval.runtime}`);
+			const callContext = context(current);
+			const runtime = this.runtimeFor(callContext.runtimeScope);
+			if (approval.runtime !== runtime.name) throw new Error(`approval runtime mismatch: ${approval.runtime}`);
 			if (!current.command) throw new Error("approved bash call missing command");
-			return this.executeBash(approval.callId, approval.channel, current.command, context(current), signal);
+			return this.executeBash(
+				approval.callId,
+				approval.channel,
+				current.actor,
+				current.command,
+				callContext,
+				signal,
+			);
 		}
 		const execute = this.executes.get(current.tool);
 		if (!execute) throw new Error(`approved tool not registered: ${current.tool}`);
-		return this.executeTool(approval.callId, current.tool, args(current.args), execute, context(current), signal);
+		return this.executeTool(
+			approval.callId,
+			current.tool,
+			current.actor,
+			args(current.args),
+			execute,
+			context(current),
+			signal,
+		);
 	}
 
 	private async handleDeny(
@@ -535,6 +565,10 @@ export class CallRunner {
 			ms: row.ms ?? undefined,
 		});
 	}
+
+	private runtimeFor(scope?: string): Runtime {
+		return typeof this.runtime === "function" ? this.runtime(scope) : this.runtime;
+	}
 }
 
 function staleApproval(text: string): Reply {
@@ -579,12 +613,15 @@ function context(call: {
 	turnId: string | null;
 	messageId: string | null;
 	toolCallId: string | null;
+	args?: string | null;
 }) {
+	const parsed = args(call.args ?? null);
 	return {
 		thread: call.threadId ?? undefined,
 		turn: call.turnId ?? undefined,
 		message: call.messageId ?? undefined,
 		toolCall: call.toolCallId ?? undefined,
+		runtimeScope: typeof parsed.runtimeScope === "string" ? parsed.runtimeScope : undefined,
 	};
 }
 
@@ -592,6 +629,7 @@ function continuation(
 	callId: string,
 	tool: string,
 	context: CallContext,
+	actor: string | null | undefined,
 	out: string,
 	err: string,
 	isError: boolean,
@@ -601,6 +639,7 @@ function continuation(
 		threadId: context.thread,
 		toolCallId: context.toolCall,
 		tool,
+		actor: actor ?? undefined,
 		out: out || `call=${callId}`,
 		err,
 		isError,
@@ -609,4 +648,8 @@ function continuation(
 
 async function missingBash(name: string): Promise<never> {
 	throw new Error(`runtime ${name} does not support bash`);
+}
+
+function compact<T extends Record<string, unknown>>(input: T): T {
+	return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)) as T;
 }

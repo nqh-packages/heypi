@@ -117,6 +117,19 @@ export type ChatConfig = {
 	busy?: BusyBehavior;
 };
 
+export type Scope = "channel" | "user" | "adapter" | "agent";
+
+export type MemoryWritePolicy = "auto" | "approvers" | "off";
+
+export type MemoryConfig =
+	| boolean
+	| {
+			enabled?: boolean;
+			scope?: Scope;
+			writePolicy?: MemoryWritePolicy;
+			maxChars?: number;
+	  };
+
 export type AppLockConfig = {
 	ttlMs?: number;
 	drainMs?: number;
@@ -130,6 +143,8 @@ export type HeypiConfig = {
 	attachments?: AttachmentConfig;
 	approval?: ApprovalConfig;
 	chat?: ChatConfig;
+	scope?: Scope;
+	memory?: MemoryConfig;
 	messages?: AppMessagesConfig;
 	appLock?: false | AppLockConfig;
 	scheduler?: Omit<SchedulerConfig, "jobs">;

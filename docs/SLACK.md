@@ -109,7 +109,7 @@ message.channels
 message.im
 ```
 
-For private channels, invite the bot to the channel and add private-channel scopes later if needed.
+For private channels, invite the bot to the channel and grant the private-channel scopes required by your Slack app configuration.
 
 ## Inbound Access
 

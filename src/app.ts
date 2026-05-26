@@ -4,8 +4,10 @@ import type { AppLockConfig, HeypiConfig } from "./config.js";
 import { ActiveRuns } from "./core/active.js";
 import { CallRunner } from "./core/calls.js";
 import { type Logger, logger, message } from "./core/log.js";
+import { MemoryStore, normalizeMemoryConfig } from "./core/memory.js";
 import { normalizeMessages } from "./core/messages.js";
 import { createScheduler } from "./core/scheduler.js";
+import { ScopedRuntimeRegistry } from "./core/scope.js";
 import { splitTools } from "./core-tools.js";
 import { runtimeAttachments } from "./io/attachments.js";
 import { createHandler, createStatus } from "./io/handler.js";
@@ -33,12 +35,19 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 	const messages = normalizeMessages(config.messages);
 	const store = config.store ?? sqliteStore({ path: "./heypi.db" });
 	const active = new ActiveRuns();
-	const runtime = createRuntime({
+	const appRuntime = createRuntime({
 		...config.runtime,
 		app: process.cwd(),
 		agent: config.agent.directory,
 	});
-	const attachments = config.attachments?.store ?? runtimeAttachments(runtime, config.attachments);
+	const runtimes = new ScopedRuntimeRegistry(config.runtime, { app: process.cwd(), agent: config.agent.directory });
+	const runtime = (scope?: string) => runtimes.getPath(scope);
+	const memoryConfig = normalizeMemoryConfig(config.memory, {
+		scope: config.scope,
+		approvers: config.approval?.approvers,
+	});
+	const memory = new MemoryStore(config.runtime.root, memoryConfig);
+	const attachments = config.attachments?.store ?? runtimeAttachments(appRuntime, config.attachments);
 	const queue = new Queue({
 		maxConcurrent: config.runtime.maxConcurrent ?? 12,
 		maxPerChat: config.runtime.maxConcurrentPerChat ?? 1,
@@ -64,8 +73,12 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 		agent: config.agent,
 		callRunner,
 		runtime,
+		sessionRuntime: appRuntime,
+		attachmentRuntime: appRuntime,
 		messages: store.messages,
 		attachments: config.attachments?.process,
+		memory,
+		approvalApprovers: config.approval?.approvers,
 		logger: log,
 		appMessages: messages,
 	});
@@ -76,6 +89,8 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 		agent,
 		approval: config.approval,
 		chat: config.chat,
+		scope: config.scope,
+		memoryScope: memoryConfig.scope,
 		messages,
 		active,
 		lockMs: config.runtime.timeoutMs,
@@ -116,10 +131,18 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 			await recoverStartup({ agent: config.agent.id, store, logger: log });
 			log.info("app.start", {
 				agent: config.agent.id,
-				runtime: runtime.name,
+				runtime: appRuntime.name,
 				adapters: config.adapters.length,
 				jobs: config.jobs?.length ?? 0,
 			});
+			if (memoryConfig.enabled) {
+				const level = memoryConfig.scope === "adapter" || memoryConfig.scope === "agent" ? "warn" : "info";
+				log[level]("memory.enabled", {
+					agent: config.agent.id,
+					scope: memoryConfig.scope,
+					writePolicy: memoryConfig.writePolicy,
+				});
+			}
 			for (const adapter of config.adapters) {
 				const start = { handler, status, logger: log, messages, attachments, http };
 				starts.set(adapter, start);

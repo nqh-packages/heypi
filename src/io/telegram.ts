@@ -2,7 +2,9 @@ import { readFile } from "node:fs/promises";
 import { codeFence } from "../core/approval-view.js";
 import { message as errorMessage, type Logger, userError } from "../core/log.js";
 import type { AppMessages } from "../core/messages.js";
+import type { ScopedKey } from "../core/scope.js";
 import { chunkText } from "../render/chunk.js";
+import { resolveOutboundAttachments, saveInboundAttachments } from "./attachment-policy.js";
 import { type Attachment, type AttachmentStore, type ResolvedAttachment, responseBytes } from "./attachments.js";
 import { runChatMessage } from "./chat-message.js";
 import { type DeliveryConfig, DeliveryQueue } from "./delivery.js";
@@ -247,10 +249,11 @@ async function handleUpdate(input: {
 		handler: input.start.handler,
 		stream,
 		progress: pending,
-		loadAttachments: () =>
+		loadAttachments: (scope) =>
 			telegramAttachments({
 				client: input.client,
 				store: input.start.attachments,
+				scope,
 				message: msg,
 				provider: input.provider,
 				kind: input.kind,
@@ -291,6 +294,7 @@ async function handleUpdate(input: {
 					store: input.start.attachments,
 					message: msg,
 					attachments: out.attachments,
+					scope: out.attachmentScope,
 					logger: input.start.logger,
 					context: context(),
 					delivery: input.delivery,
@@ -524,6 +528,7 @@ async function sendTelegramOutput(input: {
 		store: input.store,
 		message: input.message,
 		attachments: input.out.attachments,
+		scope: input.out.attachmentScope,
 		logger: input.logger,
 		context: input.context,
 		delivery: input.delivery,
@@ -644,36 +649,21 @@ async function uploadTelegramAttachments(input: {
 	store?: AttachmentStore;
 	message: TelegramMessage;
 	attachments?: Array<{ path: string; name?: string; mimeType?: string }>;
+	scope?: ScopedKey;
 	logger: Logger;
 	context: Record<string, unknown>;
 	delivery: DeliveryQueue;
 }): Promise<void> {
 	if (!input.attachments?.length) return;
-	if (!input.store) {
-		input.logger.warn("telegram.attachments_missing_store", input.context);
-		return;
-	}
-	for (const attachment of input.attachments) {
-		let file: ResolvedAttachment;
-		try {
-			file = await input.store.resolve(attachment);
-		} catch (error) {
-			input.logger.warn("telegram.attachment_resolve_failed", {
-				...input.context,
-				path: attachment.path,
-				error: errorMessage(error),
-			});
-			continue;
-		}
-		if (input.store.maxBytes !== undefined && file.size > input.store.maxBytes) {
-			input.logger.warn("telegram.attachment_upload_too_large", {
-				...input.context,
-				path: attachment.path,
-				size: file.size,
-				maxBytes: input.store.maxBytes,
-			});
-			continue;
-		}
+	const files = await resolveOutboundAttachments({
+		provider: "telegram",
+		store: input.store,
+		attachments: input.attachments,
+		scope: input.scope,
+		logger: input.logger,
+		context: input.context,
+	});
+	for (const file of files) {
 		try {
 			await input.delivery.run(
 				() =>
@@ -783,6 +773,7 @@ function startProgress(input: {
 async function telegramAttachments(input: {
 	client: TelegramClient;
 	store?: AttachmentStore;
+	scope?: ScopedKey;
 	message: TelegramMessage;
 	provider: string;
 	kind: string;
@@ -790,46 +781,23 @@ async function telegramAttachments(input: {
 	trace: string;
 	logger: Logger;
 }): Promise<Attachment[] | undefined> {
-	if (!input.store) return undefined;
 	const files = filesOf(input.message);
-	if (!files.length) return undefined;
-	const out: Attachment[] = [];
-	for (const file of files) {
-		if (input.store.maxBytes !== undefined && file.size !== undefined && file.size > input.store.maxBytes) {
-			input.logger.warn("telegram.attachment_too_large", {
-				trace: input.trace,
-				adapter: input.provider,
-				kind: input.kind,
-				file: file.id,
-				size: file.size,
-				maxBytes: input.store.maxBytes,
-			});
-			continue;
-		}
-		try {
+	const maxBytes = input.store?.maxBytes;
+	return await saveInboundAttachments({
+		provider: input.provider,
+		kind: input.kind,
+		store: input.store,
+		scope: input.scope,
+		messageId: input.messageId,
+		trace: input.trace,
+		logItemField: "file",
+		logger: input.logger,
+		refs: files,
+		download: async (file) => {
 			const found = await input.client.getFile({ file_id: file.id });
-			const data = await input.client.downloadFile(found.file_path, input.store.maxBytes);
-			out.push(
-				await input.store.save({
-					provider: input.provider,
-					id: file.id,
-					name: file.name,
-					data,
-					mimeType: file.mimeType,
-					messageId: input.messageId,
-				}),
-			);
-		} catch (error) {
-			input.logger.warn("telegram.attachment_failed", {
-				trace: input.trace,
-				adapter: input.provider,
-				kind: input.kind,
-				file: file.id,
-				error: errorMessage(error),
-			});
-		}
-	}
-	return out.length ? out : undefined;
+			return await input.client.downloadFile(found.file_path, maxBytes);
+		},
+	});
 }
 
 function textOf(msg: TelegramMessage): string {

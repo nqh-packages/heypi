@@ -1,3 +1,4 @@
+import type { TurnScope } from "../core/scope.js";
 import type { Reply, ToolContinuation } from "../core/types.js";
 import type { ReplyStream } from "../io/reply-stream.js";
 import type { Agent, AgentRes } from "../runtime/agent.js";
@@ -12,6 +13,7 @@ export type ContinueInput = {
 	trace: string;
 	turn: string;
 	continuation: ToolContinuation;
+	scope?: TurnScope;
 	stream?: ReplyStream;
 };
 
@@ -34,8 +36,9 @@ export async function continueTool(input: ContinueInput): Promise<AgentRes> {
 		turnId: input.turn,
 		provider: input.provider,
 		channel: input.channel,
-		actor: input.actor,
+		actor: input.continuation.actor ?? input.actor,
 		trace: input.trace,
+		scope: input.scope,
 		stream: input.stream,
 		continuation: input.continuation,
 	});

@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
-import type { ApprovalConfig, ChatConfig, ModelConfig } from "../config.js";
+import type { ApprovalConfig, ChatConfig, ModelConfig, Scope } from "../config.js";
 import { ActiveRuns, cancelReply, isAbortError } from "../core/active.js";
 import type { CallRunner } from "../core/calls.js";
 import { helpReply, renderApprovals, renderThreadStatus } from "../core/format.js";
 import { normalizeText, parseIntent } from "../core/intent.js";
 import { type Logger, logError, logger, message, redact, userError } from "../core/log.js";
 import { type AppMessages, DEFAULT_APP_MESSAGES } from "../core/messages.js";
+import type { ScopedKey, TurnScope } from "../core/scope.js";
+import { resolveScope, selectScope } from "../core/scope.js";
 import type { ApprovalPrompt, ApprovalResolution, Intent, ReplyAttachment } from "../core/types.js";
 import type { Agent } from "../runtime/agent.js";
 import { transaction } from "../store/transaction.js";
@@ -44,10 +46,13 @@ export type Outbound = {
 	approvalResolution?: ApprovalResolution;
 	replaceOriginal?: boolean;
 	attachments?: ReplyAttachment[];
+	attachmentScope?: ScopedKey;
 	finalPlacement?: "progress" | "thread";
 };
 
-export type Handler = (input: Inbound) => Promise<Outbound | undefined>;
+export type Handler = ((input: Inbound) => Promise<Outbound | undefined>) & {
+	attachmentScope?: (input: Pick<Inbound, "provider" | "kind" | "team" | "channel" | "actor">) => ScopedKey;
+};
 
 export type StatusResult = {
 	ok: boolean;
@@ -115,6 +120,7 @@ type HandlerBase = {
 	turn: string;
 	message: string;
 	actor: string;
+	runtimeScope?: string;
 };
 
 /** Creates the provider-neutral handler shared by Slack, Telegram, and future adapters. */
@@ -125,6 +131,8 @@ export function createHandler(input: {
 	agent: Agent;
 	approval?: ApprovalConfig;
 	chat?: ChatConfig;
+	scope?: Scope;
+	memoryScope?: Scope;
 	messages?: AppMessages;
 	active?: ActiveRuns;
 	lockMs?: number;
@@ -135,7 +143,22 @@ export function createHandler(input: {
 	const active = input.active ?? new ActiveRuns();
 	const chat = normalizeChat(input.chat);
 	const messages = input.messages ?? DEFAULT_APP_MESSAGES;
-	return async (msg) => {
+	const scopeFor = (msg: Pick<Inbound, "provider" | "kind" | "team" | "channel" | "actor">): TurnScope => {
+		const keys = resolveScope({
+			agent: agentId,
+			provider: msg.provider,
+			kind: msg.kind ?? msg.provider,
+			team: msg.team,
+			channel: msg.channel,
+			actor: msg.actor,
+		});
+		return {
+			workspace: selectScope(keys, input.scope),
+			memory: selectScope(keys, input.memoryScope ?? input.scope),
+			keys,
+		};
+	};
+	const handle: Handler = async (msg) => {
 		const trace = msg.trace ?? randomUUID();
 		const rawText = normalizeText(msg.text);
 		const text = attachmentPrompt(rawText, msg.attachments);
@@ -162,6 +185,7 @@ export function createHandler(input: {
 			actor: msg.actor,
 			key: msg.thread,
 		});
+		const turnScope = scopeFor(msg);
 		const lockKey = `thread:${thread.id}`;
 		const lockOwner = `${trace}:${randomUUID()}`;
 		if (intent.kind === "cancel") {
@@ -301,6 +325,7 @@ export function createHandler(input: {
 				turn: turn.id,
 				message: inbound.row.id,
 				actor: msg.actor,
+				runtimeScope: turnScope.workspace.path,
 			};
 
 			log.debug("handler.intent", { ...base, kind: intent.kind });
@@ -327,6 +352,7 @@ export function createHandler(input: {
 								trace,
 								text: messageText,
 								model: msg.model,
+								scope: turnScope,
 								attachments: msg.attachments,
 								signal: currentRun.signal,
 								stream,
@@ -354,6 +380,7 @@ export function createHandler(input: {
 					trace,
 					turn: currentTurn.id,
 					continuation: reply.continuation,
+					scope: turnScope,
 					stream,
 				});
 			}
@@ -380,6 +407,7 @@ export function createHandler(input: {
 				stream,
 				finalPlacement,
 				base,
+				attachmentScope: turnScope.workspace,
 				logger: log,
 			});
 		} catch (error) {
@@ -421,6 +449,8 @@ export function createHandler(input: {
 			run?.stop();
 		}
 	};
+	handle.attachmentScope = (msg) => scopeFor(msg).workspace;
+	return handle;
 }
 
 export function createStatus(input: { agentId?: string; store: Store }): Status {
@@ -498,6 +528,7 @@ async function finishReplyTurn(input: {
 	aborted: boolean;
 	stream?: ReplyStream;
 	finalPlacement: NonNullable<Outbound["finalPlacement"]>;
+	attachmentScope: ScopedKey;
 	base: HandlerBase;
 	logger: Logger;
 }): Promise<Outbound> {
@@ -529,6 +560,7 @@ async function finishReplyTurn(input: {
 		approvalResolution: input.reply.approvalResolution,
 		replaceOriginal: input.reply.replaceOriginal,
 		attachments: input.reply.attachments,
+		attachmentScope: input.attachmentScope,
 		finalPlacement: input.finalPlacement,
 	};
 }

@@ -7,7 +7,7 @@ heypi is a thin Node.js wrapper around Pi for team chat agents. The library keep
 - Keep agent setup code-first and close to Pi conventions.
 - Keep adapters provider-specific and the agent handler provider-neutral.
 - Persist enough state for audit, retries, approvals, scheduling, and Pi session routing.
-- Run commands and file tools inside one configured workspace runtime.
+- Run commands and file tools inside scoped workspace runtime roots.
 - Prefer explicit safety boundaries over model-only policy.
 
 ## Process Model
@@ -18,6 +18,7 @@ heypi is a thin Node.js wrapper around Pi for team chat agents. The library keep
 createHeypi(config)
   store.setup()
   runtime = createRuntime(config.runtime)
+  scopedRuntimes = new ScopedRuntimeRegistry(config.runtime)
   callRunner = new CallRunner(...)
   agent = new PiAgent(...)
   handler = createHandler(...)
@@ -27,7 +28,7 @@ createHeypi(config)
   scheduler.start()
 ```
 
-The current production runtime target is a hosted Node process. HTTP adapters register routes on heypi's shared Node HTTP listener, Slack Socket Mode uses a websocket connection, Telegram uses long polling, and Discord uses the gateway. Cloudflare Workers and other Fetch API runtimes are not supported yet.
+The production runtime target is a hosted Node process. HTTP adapters register routes on heypi's shared Node HTTP listener, Slack Socket Mode uses a websocket connection, Telegram uses long polling, and Discord uses the gateway. Cloudflare Workers and other Fetch API runtimes are outside the supported deployment model.
 
 ## Main Boundaries
 
@@ -52,7 +53,7 @@ agent/
 
 `agentFrom()` resolves files and folders at process startup. Missing files are ignored, except `SOUL.md`: when it is absent, heypi uses a short built-in concise-assistant identity. The model must be passed explicitly or through `HEYPI_MODEL`.
 
-Prompt layers are intentionally split:
+Prompt layers are split by responsibility:
 
 - heypi runtime prompt: short built-in tool/protocol guidance, generated from active core tools.
 - `SOUL.md`: identity, role, voice, and communication style. Missing `SOUL.md` falls back to the built-in concise identity.
@@ -99,9 +100,9 @@ Inbound allowlists and channel membership are adapter concerns. Once an event is
 - writes audit, turn, call, and approval state
 - returns redacted outbound text to the adapter
 
-The handler is intentionally the only place where inbound provider messages become durable turns.
+The handler is the only place where inbound provider messages become durable turns.
 
-When a same-thread ask arrives while a turn holds the thread lock, the handler uses `chat.busy`. `steer` and `followUp` persist the inbound message as an audit row, add actor attribution, and enqueue it into the active Pi session through `ActiveRuns`. They do not create a second heypi turn. `reject` returns a public acknowledgement without calling Pi. If a pending approval exists, new asks are rejected until the approval is approved or denied; durable queueing across approvals is intentionally not implemented.
+When a same-thread ask arrives while a turn holds the thread lock, the handler uses `chat.busy`. `steer` and `followUp` persist the inbound message as an audit row, add actor attribution, and enqueue it into the active Pi session through `ActiveRuns`. They do not create a second heypi turn. `reject` returns a public acknowledgement without calling Pi. If a pending approval exists, new asks are rejected until the approval is approved or denied.
 
 `ActiveRuns` stores the initiating actor and thread for each live run. Cancel requests only abort the run when they come from that initiating actor or a configured approver, and only from the same thread.
 
@@ -130,14 +131,22 @@ Core tools and custom tools use the same confirmation path. `coreTools()` regist
 
 ### Runtime
 
-`src/runtime/` owns command and file access. Runtime selection is static per app:
+`src/runtime/` owns command and file access. The runtime backend is static per app, but heypi resolves a scoped runtime root for each turn:
 
 - `just-bash`: default production runtime
 - `docker-bash`: bash in Docker with the workspace mounted at `/workspace`
 - `guarded-bash`: host bash plus regex guardrails
 - `host-bash`: host bash, unsafe/dev/admin mode
 
-File tools run under the configured workspace root and enforce size, lexical traversal, and symlink escape limits. `just-bash` network access is off by default; configure `runtime.justBash.network` when the agent needs `curl` or other network-backed commands. Regex command classification is a guardrail, not isolation. Use `just-bash` or `docker-bash` for team-facing agents.
+`scope` selects how broadly the workspace is shared: `channel` by default, or `user` / `adapter` / `agent` when configured. Scoped runtime roots live under `runtime.root/scopes/<scope-key>`. Pi sessions remain per thread and live under the app runtime root.
+
+File tools run under the active scoped workspace root and enforce size, lexical traversal, and symlink escape limits. `just-bash` network access is off by default; configure `runtime.justBash.network` when the agent needs `curl` or other network-backed commands. Regex command classification is a guardrail, not isolation. Use `just-bash` or `docker-bash` for team-facing agents.
+
+### Memory
+
+Memory is optional durable context, not transcript storage. It is disabled by default. When `memory` is enabled, heypi stores one `MEMORY.md` under `memory.scope`, which defaults to the top-level `scope`, and injects it as background context before the model turn. The agent can maintain that file through `memory_read`, `memory_write`, `memory_replace`, and `memory_delete` when `memory.writePolicy` allows it.
+
+Memory is shared by every user who can talk to the bot in that scope. With `channel`, all users in that chat share memory; with `user`, each actor gets separate memory; with `adapter`, all accepted chats on that adapter share memory; with `agent`, all adapters for that configured agent share memory. Memory writes are controlled by `memory.writePolicy`, defaulting to `approvers` when `approval.approvers` is configured. Writes are bounded by `maxChars`, reject obvious secrets/private keys, and reject prompt-injection-shaped content. This is hygiene, not a security boundary; app authors should treat memory as user-influenced context that can resurface later.
 
 ### Store
 
@@ -151,7 +160,7 @@ File tools run under the configured workspace root and enforce size, lexical tra
 - jobs and job runs
 - locks
 
-Pi session history lives in JSONL files under the configured runtime root, for example `sessions/<session-id>.jsonl`. The per-thread lock gates writes to the corresponding Pi session file.
+Pi session history lives in JSONL files under the app runtime root, for example `sessions/<session-id>.jsonl`. The per-thread lock gates writes to the corresponding Pi session file.
 
 Thread routes store both `sessionId` and `sessionPath`. New routes use a random session id and a relative path under the runtime root; absolute session paths are resolved as-is by the Pi runtime adapter. SQLite is operational state and audit/search/status data only. It is not replayed as Pi protocol history.
 
@@ -168,7 +177,9 @@ Scheduled turns reuse the same handler path as inbound messages with `scheduled:
 
 ### Attachments
 
-`src/io/attachments.ts` defines the attachment store and processing boundary. The default attachment store writes through the configured runtime workspace. Adapters download provider files into this store. Attachment processing passes supported images to Pi as image inputs, inlines text-like files, optionally converts document formats through a configured local converter, and falls back to attachment references for unsupported files or failed conversions.
+`src/io/attachments.ts` defines the attachment store and processing boundary. The default attachment store writes inbound uploads into a separate scoped attachment tree under `runtime.root/attachments/scopes/<scope-key>`. Adapters download provider files into this store after the shared handler scope resolver selects the active scope. Attachment resolution requires the current scope, so a ref from another channel is rejected under the default `channel` scope. Outbound agent-created files may also be resolved from the active scoped runtime workspace under `runtime.root/scopes/<scope-key>`.
+
+Attachment processing passes supported images to Pi as image inputs, inlines text-like files, optionally converts document formats through a configured local converter, and falls back to attachment references for unsupported files or failed conversions. Attachments stay separate from the mutable runtime workspace; they are user input, not agent-owned workspace state.
 
 ### Delivery And Streaming
 
@@ -202,15 +213,15 @@ heypi's safety model is concrete and layered:
 - tool calls are audited
 - dangerous bash commands can be blocked or approval-gated
 - confirmed custom tools can require human approval
-- file tools are scoped to the runtime workspace and size-limited
+- file tools are scoped to the active runtime workspace and size-limited
 - `just-bash` is the safe default runtime
 - `docker-bash` provides a stronger OS boundary for bash when Docker is available
 
 The model does not claim that regex policies or host bash are isolation. `guarded-bash` and `host-bash` execute on the host and should be treated as unsafe/dev/admin modes.
 
-## Deployment Boundaries
+## Supported Deployments
 
-Supported today:
+Supported:
 
 - long-running Node process
 - Slack Socket Mode
@@ -220,10 +231,8 @@ Supported today:
 - Webhook HTTP mode through Node's HTTP server
 - local SQLite store
 
-Not supported today:
+Not supported:
 
 - Cloudflare Workers / Fetch API adapters
 - multi-replica distributed delivery limiting
 - crash-durable approval replay beyond persisted call and approval rows
-
-These are intentionally documented as outside the shipped runtime until the adapter, store, scheduler, attachment, and deploy story is complete.

@@ -13,10 +13,13 @@ export {
 	type DockerConfig,
 	type HeypiConfig,
 	type JustBashConfig,
+	type MemoryConfig,
+	type MemoryWritePolicy,
 	type ModelConfig,
 	modelConfig,
 	type RuntimeConfig,
 	type RuntimeLimits,
+	type Scope,
 } from "./config.js";
 export { consoleLogger, type Format, type Level, type Logger } from "./core/log.js";
 export type { AppMessages, AppMessagesConfig } from "./core/messages.js";

@@ -211,6 +211,42 @@ createHeypi({
 });
 ```
 
+## Scope And Memory
+
+`scope` controls how broadly the tool workspace, generated files, and attachments are shared:
+
+- `channel` default: one workspace per Slack channel, Telegram chat, Discord channel, or webhook channel.
+- `user`: one workspace per chat user.
+- `adapter`: one workspace for an adapter instance.
+- `agent`: one workspace across adapters for this configured agent.
+
+Pi sessions and chat history stay per thread.
+
+Memory is off by default. When enabled, `memory.scope` controls who shares the memory file and defaults to the top-level `scope`:
+
+```ts
+createHeypi({
+	// ...
+	scope: "channel",
+	memory: {
+		enabled: true,
+		scope: "user",
+		writePolicy: "approvers",
+		maxChars: 4000,
+	},
+});
+```
+
+Memory scopes are `channel`, `user`, `adapter`, or `agent`. `writePolicy` controls memory mutation:
+
+- `auto`: the agent can write, replace, and delete memory.
+- `approvers`: only turns initiated by `approval.approvers` can mutate memory.
+- `off`: memory is read/injected, but mutation is disabled.
+
+When `approval.approvers` is configured, writes default to `approvers`. Without approvers, `channel` and `user` default to `auto`; `adapter` and `agent` default to `off`. Enabled memory logs its scope and write policy at startup, with broad scopes logged as warnings. Memory is shared durable model context, not trusted config: anyone allowed by the write policy can affect future answers in that scope.
+
+See [`docs/SCOPE_AND_MEMORY.md`](docs/SCOPE_AND_MEMORY.md).
+
 ## Scheduling
 
 heypi can create proactive turns:
@@ -234,7 +270,7 @@ See [`docs/SCHEDULING.md`](docs/SCHEDULING.md).
 
 ## Runtime And Attachments
 
-Use one runtime per app. `just-bash` is the recommended default.
+Use one runtime config per app. `just-bash` is the recommended default.
 
 ```ts
 runtime: {
@@ -245,7 +281,7 @@ runtime: {
 
 `just-bash` disables network by default. `docker-bash` gives OS-level process isolation through Docker. `guarded-bash` and `host-bash` run on the host and should be used only for trusted deployments.
 
-Attachments are stored under the runtime root. Text-like files are inlined into the prompt, images are passed to Pi as image inputs, and unsupported binaries are kept as references. Optional PDF/Office conversion is available with:
+Tool workspaces are derived from the configured `scope`. Inbound attachments use a separate scoped attachment tree, and outbound generated files resolve from the active scoped workspace, so files from one channel are not resolved from another channel under the default scope. Text-like files are inlined into the prompt, images are passed to Pi as image inputs, and unsupported binaries are kept as references. Optional PDF/Office conversion is available with:
 
 ```ts
 attachments: { process: { documents: true } }
@@ -298,6 +334,7 @@ See [`docs/CLI.md`](docs/CLI.md).
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): process model, persistence, security model
 - [`docs/CHAT.md`](docs/CHAT.md): shared chat defaults, streaming, approvals, cancel
+- [`docs/SCOPE_AND_MEMORY.md`](docs/SCOPE_AND_MEMORY.md): scope and memory model
 - [`docs/EXTENDING.md`](docs/EXTENDING.md): custom tools, adapters, stores, attachments
 - [`docs/SCHEDULING.md`](docs/SCHEDULING.md): cron and heartbeat jobs
 - [`docs/CLI.md`](docs/CLI.md): setup and diagnostic commands

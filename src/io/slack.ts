@@ -2,8 +2,10 @@ import { type AllMiddlewareArgs, App, HTTPReceiver, type types } from "@slack/bo
 import { codeFence } from "../core/approval-view.js";
 import { message as errorMessage, type Logger, userError } from "../core/log.js";
 import type { AppMessages } from "../core/messages.js";
+import type { ScopedKey } from "../core/scope.js";
 import { chunkText } from "../render/chunk.js";
-import { type Attachment, type AttachmentStore, type ResolvedAttachment, responseBytes } from "./attachments.js";
+import { resolveOutboundAttachments, saveInboundAttachments } from "./attachment-policy.js";
+import { type Attachment, type AttachmentStore, responseBytes } from "./attachments.js";
 import { runChatMessage } from "./chat-message.js";
 import { type DeliveryConfig, DeliveryQueue } from "./delivery.js";
 import { allowByDimensions, messageTriggered } from "./gate.js";
@@ -231,9 +233,10 @@ export function slack(input: SlackConfig): Adapter {
 					handler,
 					stream,
 					progress: pending,
-					loadAttachments: () =>
+					loadAttachments: (scope) =>
 						slackAttachments({
 							store: start.attachments,
+							scope,
 							files: msg.files,
 							token: input.botToken,
 							provider: name,
@@ -330,6 +333,7 @@ export function slack(input: SlackConfig): Adapter {
 								channel,
 								thread: reply.thread,
 								attachments: out.attachments,
+								scope: out.attachmentScope,
 								logger: log,
 								context: context({ thread: reply.thread }),
 								delivery,
@@ -371,6 +375,7 @@ export function slack(input: SlackConfig): Adapter {
 				channel,
 				thread: target.mode === "channel" ? undefined : target.thread,
 				attachments: out.attachments,
+				scope: out.attachmentScope,
 				logger: log ?? { debug() {}, info() {}, warn() {}, error() {} },
 				context: { adapter: name, kind, channel, thread: target.thread },
 				delivery,
@@ -465,40 +470,20 @@ async function uploadSlackAttachments(input: {
 	channel: string;
 	thread?: string;
 	attachments?: Array<{ path: string; name?: string; mimeType?: string }>;
+	scope?: ScopedKey;
 	logger: Logger;
 	context: Record<string, unknown>;
 	delivery: DeliveryQueue;
 }): Promise<void> {
 	if (!input.attachments?.length) return;
-	if (!input.store) {
-		input.logger.warn("slack.attachments_missing_store", input.context);
-		return;
-	}
-	const files: ResolvedAttachment[] = [];
-	for (const attachment of input.attachments) {
-		try {
-			files.push(await input.store.resolve(attachment));
-		} catch (error) {
-			input.logger.warn("slack.attachment_resolve_failed", {
-				...input.context,
-				path: attachment.path,
-				error: errorMessage(error),
-			});
-		}
-	}
-	const maxBytes = input.store.maxBytes;
-	const allowed = maxBytes === undefined ? files : files.filter((file) => file.size <= maxBytes);
-	for (const file of files) {
-		if (maxBytes !== undefined && file.size > maxBytes) {
-			input.logger.warn("slack.attachment_upload_too_large", {
-				...input.context,
-				path: file.path,
-				size: file.size,
-				maxBytes,
-			});
-		}
-	}
-	files.splice(0, files.length, ...allowed);
+	const files = await resolveOutboundAttachments({
+		provider: "slack",
+		store: input.store,
+		attachments: input.attachments,
+		scope: input.scope,
+		logger: input.logger,
+		context: input.context,
+	});
 	if (!files.length) return;
 	try {
 		await input.delivery.run(
@@ -858,6 +843,7 @@ type SlackFile = {
 async function slackAttachments(input: {
 	store?: AttachmentStore;
 	files?: SlackFile[];
+	scope?: ScopedKey;
 	token: string;
 	provider: string;
 	kind: string;
@@ -865,49 +851,49 @@ async function slackAttachments(input: {
 	trace?: string;
 	logger: Logger;
 }): Promise<Attachment[] | undefined> {
-	if (!input.store || !input.files?.length) return undefined;
-	const attachments: Attachment[] = [];
-	for (const file of input.files) {
-		const url = file.url_private_download ?? file.url_private;
-		if (!url) continue;
-		if (input.store.maxBytes !== undefined && file.size !== undefined && file.size > input.store.maxBytes) {
-			input.logger.warn("slack.attachment_too_large", {
-				trace: input.trace,
-				adapter: input.provider,
-				kind: input.kind,
-				file: file.id ?? file.name,
-				size: file.size,
-				maxBytes: input.store.maxBytes,
-			});
-			continue;
-		}
-		try {
+	const maxBytes = input.store?.maxBytes;
+	return await saveInboundAttachments({
+		provider: input.provider,
+		kind: input.kind,
+		store: input.store,
+		scope: input.scope,
+		messageId: input.messageId,
+		trace: input.trace,
+		logItemField: "file",
+		logger: input.logger,
+		refs: slackPolicyFiles(input.files),
+		download: async (file) => {
+			const url = file.sourceUrl;
 			assertSlackFileUrl(url);
 			const response = await fetch(url, { headers: { Authorization: `Bearer ${input.token}` } });
 			if (!response.ok) throw new Error(`Slack file download failed: ${response.status}`);
-			const data = await responseBytes(response, input.store.maxBytes);
-			attachments.push(
-				await input.store.save({
-					provider: input.provider,
-					id: file.id,
-					name: file.name ?? file.title ?? file.id ?? "attachment",
-					data,
-					mimeType: file.mimetype,
-					sourceUrl: url,
-					messageId: input.messageId,
-				}),
-			);
-		} catch (error) {
-			input.logger.warn("slack.attachment_failed", {
-				trace: input.trace,
-				adapter: input.provider,
-				kind: input.kind,
-				file: file.id ?? file.name,
-				error: errorMessage(error),
-			});
-		}
+			return await responseBytes(response, maxBytes);
+		},
+	});
+}
+
+type SlackPolicyFile = {
+	id?: string;
+	name: string;
+	mimeType?: string;
+	size?: number;
+	sourceUrl: string;
+};
+
+function slackPolicyFiles(files: SlackFile[] | undefined): SlackPolicyFile[] {
+	const out: SlackPolicyFile[] = [];
+	for (const file of files ?? []) {
+		const url = file.url_private_download ?? file.url_private;
+		if (!url) continue;
+		out.push({
+			id: file.id,
+			name: file.name ?? file.title ?? file.id ?? "attachment",
+			mimeType: file.mimetype,
+			size: file.size,
+			sourceUrl: url,
+		});
 	}
-	return attachments.length ? attachments : undefined;
+	return out;
 }
 
 function assertSlackFileUrl(input: string): void {

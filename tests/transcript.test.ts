@@ -37,6 +37,7 @@ test("continueTool passes Pi session route to the agent", async () => {
 				threadId: thread.id,
 				toolCallId: "tool-call-1",
 				tool: "bash",
+				actor: "U_REQUESTER",
 				out: "ok",
 				err: "",
 				isError: false,
@@ -46,6 +47,7 @@ test("continueTool passes Pi session route to the agent", async () => {
 		assert.equal(request?.threadId, thread.id);
 		assert.equal(request?.sessionId, thread.sessionId);
 		assert.equal(request?.sessionPath, thread.sessionPath);
+		assert.equal(request?.actor, "U_REQUESTER");
 		assert.equal(request?.continuation?.toolCallId, "tool-call-1");
 	} finally {
 		await rm(root, { recursive: true, force: true });

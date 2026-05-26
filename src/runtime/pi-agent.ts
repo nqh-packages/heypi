@@ -8,18 +8,23 @@ import {
 	type ResourceLoader,
 	SessionManager,
 	SettingsManager,
+	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
 import type { AgentConfig, AgentContextBlock, AgentContextInput, ModelConfig } from "../config.js";
 import { normalizeApprovalDetails } from "../core/approval-view.js";
 import type { CallRunner } from "../core/calls.js";
 import { type Logger, logError, logger, redact, userError } from "../core/log.js";
+import { type MemoryStore, memoryContext } from "../core/memory.js";
 import { type AppMessages, DEFAULT_APP_MESSAGES } from "../core/messages.js";
+import type { ScopedKey } from "../core/scope.js";
 import type { ApprovalPrompt, ToolContinuation } from "../core/types.js";
 import { splitTools } from "../core-tools.js";
 import { type AttachmentProcessingConfig, attachmentInput } from "../io/attachments.js";
 import type { ReplyStream } from "../io/reply-stream.js";
 import type { Messages, StoredMessage } from "../store/types.js";
 import type { Agent, AgentReq, AgentRes } from "./agent.js";
+import { stringParam } from "./tool-util.js";
 import { tools } from "./tools.js";
 import type { Runtime } from "./types.js";
 
@@ -31,9 +36,13 @@ const DEFAULT_SYSTEM = [
 export type PiAgentInput = {
 	agent: AgentConfig;
 	callRunner: CallRunner;
-	runtime: Runtime;
+	runtime: Runtime | ((scope?: string) => Runtime);
+	sessionRuntime?: Runtime;
+	attachmentRuntime?: Runtime;
 	messages: Messages;
 	attachments?: AttachmentProcessingConfig;
+	memory?: MemoryStore;
+	approvalApprovers?: string[];
 	logger?: Logger;
 	appMessages?: AppMessages;
 };
@@ -158,11 +167,23 @@ export class PiAgent implements Agent {
 		else req.signal?.addEventListener("abort", abort, { once: true });
 		req.onLiveSession?.({
 			steer: async (text, attachments) => {
-				const prompt = await attachmentInput(this.input.runtime, text, attachments, this.input.attachments, log);
+				const prompt = await attachmentInput(
+					this.attachmentRuntime(),
+					text,
+					attachments,
+					this.input.attachments,
+					log,
+				);
 				await session.steer(prompt.text, prompt.images);
 			},
 			followUp: async (text, attachments) => {
-				const prompt = await attachmentInput(this.input.runtime, text, attachments, this.input.attachments, log);
+				const prompt = await attachmentInput(
+					this.attachmentRuntime(),
+					text,
+					attachments,
+					this.input.attachments,
+					log,
+				);
 				await session.followUp(prompt.text, prompt.images);
 			},
 		});
@@ -170,7 +191,7 @@ export class PiAgent implements Agent {
 			if (mode === "continue") await session.agent.continue();
 			else {
 				const prompt = await attachmentInput(
-					this.input.runtime,
+					this.attachmentRuntime(),
 					req.text,
 					req.attachments,
 					this.input.attachments,
@@ -233,7 +254,7 @@ export class PiAgent implements Agent {
 	private async create(
 		channel: string,
 		actor: string,
-		req: Pick<AgentReq, "sessionId" | "sessionPath">,
+		req: Pick<AgentReq, "sessionId" | "sessionPath" | "scope">,
 		context: {
 			trace?: string;
 			agent: string;
@@ -273,16 +294,28 @@ export class PiAgent implements Agent {
 			inputMessageId: context.message,
 			trace: context.trace,
 		});
+		const memoryBlock =
+			this.input.memory && req.scope
+				? memoryContext(req.scope.memory, await this.input.memory.read(req.scope.memory))
+				: undefined;
+		if (memoryBlock) contextBlocks.push(memoryBlock);
 		const agentTools = splitTools(agent.tools);
+		const runtime = this.runtimeFor(req.scope?.workspace.path);
 		const customTools = tools({
-			runtime: this.input.runtime,
+			runtime,
 			callRunner: this.input.callRunner,
 			messages: this.input.messages,
 			channel,
 			actor,
-			context,
+			context: { ...context, runtimeScope: req.scope?.workspace.path },
 			core: agentTools.core,
-			custom: agentTools.custom,
+			custom: [
+				...agentTools.custom,
+				...memoryTools(this.input.memory, req.scope?.memory, {
+					actor,
+					approvers: this.input.approvalApprovers ?? [],
+				}),
+			],
 			logger: log,
 		});
 		const activeToolNames: string[] = [];
@@ -308,13 +341,81 @@ export class PiAgent implements Agent {
 	}
 
 	private sessionManager(input: Pick<AgentReq, "sessionPath">): SessionManager {
-		const path = sessionPath(this.input.runtime.root, input.sessionPath);
+		const path = sessionPath((this.input.sessionRuntime ?? this.runtimeFor()).root, input.sessionPath);
 		return SessionManager.open(path, dirname(path), this.input.agent.directory);
+	}
+
+	private runtimeFor(scope?: string): Runtime {
+		return typeof this.input.runtime === "function" ? this.input.runtime(scope) : this.input.runtime;
+	}
+
+	private attachmentRuntime(): Runtime {
+		return this.input.attachmentRuntime ?? this.runtimeFor();
 	}
 }
 
 function sessionPath(root: string, path: string): string {
 	return isAbsolute(path) ? path : resolve(root, path);
+}
+
+function memoryTools(
+	memory: MemoryStore | undefined,
+	scope: ScopedKey | undefined,
+	policy: { actor: string; approvers: string[] },
+): ToolDefinition[] {
+	if (!memory?.enabled() || !scope) return [];
+	const assertCanWrite = () => {
+		if (memory.writePolicy() === "off") throw new Error("memory writes are disabled");
+		if (memory.writePolicy() === "approvers" && !policy.approvers.includes(policy.actor)) {
+			throw new Error("memory writes require an approver");
+		}
+	};
+	return [
+		{
+			name: "memory_read",
+			label: "Memory Read",
+			description: "Read persistent memory for this chat workspace.",
+			parameters: Type.Object({}),
+			execute: async () => toolText((await memory.read(scope)).trim() || "no memory", "memory_read"),
+		},
+		{
+			name: "memory_write",
+			label: "Memory Write",
+			description: "Append one concise persistent memory item for this chat workspace.",
+			parameters: Type.Object({ content: Type.String({ minLength: 1 }) }),
+			execute: async (_id, params) => {
+				assertCanWrite();
+				const item = await memory.append(scope, stringParam(params, "content"));
+				return toolText(`saved memory: ${item}`, "memory_write");
+			},
+		},
+		{
+			name: "memory_replace",
+			label: "Memory Replace",
+			description: "Replace exact text in persistent memory for this chat workspace.",
+			parameters: Type.Object({ oldText: Type.String({ minLength: 1 }), newText: Type.String({ minLength: 1 }) }),
+			execute: async (_id, params) => {
+				assertCanWrite();
+				await memory.replace(scope, stringParam(params, "oldText"), stringParam(params, "newText"));
+				return toolText("memory updated", "memory_replace");
+			},
+		},
+		{
+			name: "memory_delete",
+			label: "Memory Delete",
+			description: "Delete exact text from persistent memory for this chat workspace.",
+			parameters: Type.Object({ text: Type.String({ minLength: 1 }) }),
+			execute: async (_id, params) => {
+				assertCanWrite();
+				await memory.delete(scope, stringParam(params, "text"));
+				return toolText("memory deleted", "memory_delete");
+			},
+		},
+	];
+}
+
+function toolText(text: string, tool: string) {
+	return { content: [{ type: "text" as const, text }], details: { tool } };
 }
 
 function appendToolResult(session: SessionManager, input: ToolContinuation): void {

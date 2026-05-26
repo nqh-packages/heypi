@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { resolveScope } from "../src/core/scope.js";
+import { resolveOutboundAttachments, saveInboundAttachments } from "../src/io/attachment-policy.js";
+import type { AttachmentStore, ResolvedAttachment } from "../src/io/attachments.js";
 import { attachmentInput, attachmentPrompt, responseBytes, runtimeAttachments } from "../src/io/attachments.js";
 import type { Runtime } from "../src/runtime/types.js";
 
@@ -12,6 +15,60 @@ test("attachmentPrompt appends stable paths and metadata", () => {
 			{ name: "report.txt", path: "/incoming/report.txt", mimeType: "text/plain", size: 5 },
 		]),
 		"review this\nAttachments:\n- report.txt: /incoming/report.txt (text/plain, 5 bytes)",
+	);
+});
+
+test("runtimeAttachments scopes inbound attachment access", async () => {
+	const root = await mkdtemp(join(tmpdir(), "heypi-attachments-scoped-"));
+	const store = runtimeAttachments(runtime(root, "just-bash"));
+	const keys = resolveScope({
+		agent: "agent",
+		provider: "slack",
+		kind: "slack",
+		team: "T1",
+		channel: "C1",
+		actor: "U1",
+	});
+	const other = resolveScope({
+		agent: "agent",
+		provider: "slack",
+		kind: "slack",
+		team: "T1",
+		channel: "C2",
+		actor: "U2",
+	});
+
+	const file = await store.save({
+		provider: "slack",
+		id: "F123",
+		name: "hello.txt",
+		data: new TextEncoder().encode("hello"),
+		mimeType: "text/plain",
+		messageId: "1700.1",
+		scope: keys.channel,
+	});
+
+	assert.equal(file.scope, keys.channel.path);
+	assert.equal(file.path, "/attachments/scopes/channel/agent/slack/T1/C1/incoming/slack/1700.1/F123-hello.txt");
+	assert.equal((await store.resolve(file, keys.channel)).size, 5);
+	await assert.rejects(() => store.resolve(file, other.channel), /scope mismatch/);
+	await mkdir(join(root, "scopes", keys.channel.path), { recursive: true });
+	await writeFile(join(root, "scopes", keys.channel.path, "report.txt"), "report");
+	assert.equal((await store.resolve({ path: `/scopes/${keys.channel.path}/report.txt` }, keys.channel)).size, 6);
+	await assert.rejects(
+		() => store.resolve({ path: `/scopes/${keys.channel.path}/report.txt` }, other.channel),
+		/scope mismatch/,
+	);
+	await assert.rejects(
+		() =>
+			store.resolve(
+				{
+					path: "/attachments/scopes/channel/agent/slack/T1/C1/incoming/slack/1700.1/F123-hello.txt",
+					name: "hello.txt",
+				},
+				other.channel,
+			),
+		/scope mismatch/,
 	);
 });
 
@@ -143,6 +200,156 @@ test("runtimeAttachments rejects symlink escapes", async () => {
 	await assert.rejects(() => store.resolve({ path: "link.txt" }), /escapes runtime root/);
 });
 
+test("saveInboundAttachments applies shared size, save, and failure policy", async () => {
+	const logs: Array<{ event: string; fields: Record<string, unknown> }> = [];
+	const saved: string[] = [];
+	const store: AttachmentStore = {
+		maxBytes: 4,
+		async save(input) {
+			saved.push(input.name);
+			return {
+				name: input.name,
+				path: `/incoming/${input.name}`,
+				size: input.data.byteLength,
+				scope: input.scope?.path,
+			};
+		},
+		async resolve() {
+			throw new Error("unused");
+		},
+	};
+	const scope = resolveScope({
+		agent: "a",
+		provider: "slack",
+		kind: "slack",
+		team: "T",
+		channel: "C",
+		actor: "U",
+	}).channel;
+
+	const out = await saveInboundAttachments({
+		provider: "slack",
+		kind: "slack",
+		store,
+		scope,
+		trace: "trace",
+		messageId: "m1",
+		logItemField: "file",
+		logger: logger(logs),
+		refs: [
+			{ id: "ok", name: "ok.txt", size: 2 },
+			{ id: "big", name: "big.txt", size: 5 },
+			{ id: "bad", name: "bad.txt", size: 1 },
+		],
+		download: async (ref) => {
+			if (ref.id === "bad") throw new Error("download failed");
+			return new TextEncoder().encode("ok");
+		},
+	});
+
+	assert.deepEqual(saved, ["ok.txt"]);
+	assert.deepEqual(
+		out?.map((file) => file.path),
+		["/incoming/ok.txt"],
+	);
+	assert.deepEqual(
+		logs.map((entry) => entry.event),
+		["slack.attachment_too_large", "slack.attachment_failed"],
+	);
+	assert.equal(logs[0]?.fields.file, "big");
+	assert.equal(logs[1]?.fields.file, "bad");
+});
+
+test("resolveOutboundAttachments applies shared store and max-size policy", async () => {
+	const logs: Array<{ event: string; fields: Record<string, unknown> }> = [];
+	const files = new Map<string, ResolvedAttachment>([
+		["ok.txt", { path: "/tmp/ok.txt", name: "ok.txt", size: 2 }],
+		["big.txt", { path: "/tmp/big.txt", name: "big.txt", size: 5 }],
+	]);
+	const store: AttachmentStore = {
+		maxBytes: 4,
+		async save() {
+			throw new Error("unused");
+		},
+		async resolve(input) {
+			const file = files.get(input.path);
+			if (!file) throw new Error("missing");
+			return file;
+		},
+	};
+
+	const out = await resolveOutboundAttachments({
+		provider: "telegram",
+		store,
+		attachments: [{ path: "ok.txt" }, { path: "big.txt" }, { path: "missing.txt" }],
+		logger: logger(logs),
+		context: { trace: "trace" },
+	});
+
+	assert.deepEqual(
+		out.map((file) => file.name),
+		["ok.txt"],
+	);
+	assert.deepEqual(
+		logs.map((entry) => entry.event),
+		["telegram.attachment_upload_too_large", "telegram.attachment_resolve_failed"],
+	);
+	assert.equal(logs[0]?.fields.path, "big.txt");
+	assert.equal(logs[1]?.fields.path, "missing.txt");
+});
+
+test("resolveOutboundAttachments forwards scope to the attachment store", async () => {
+	const logs: Array<{ event: string; fields: Record<string, unknown> }> = [];
+	const scope = resolveScope({
+		agent: "a",
+		provider: "slack",
+		kind: "slack",
+		team: "T",
+		channel: "C",
+		actor: "U",
+	}).channel;
+	let receivedScope: string | undefined;
+	const store: AttachmentStore = {
+		async save() {
+			throw new Error("unused");
+		},
+		async resolve(_input, inputScope) {
+			receivedScope = inputScope?.path;
+			return { path: "/tmp/out.txt", name: "out.txt", size: 1 };
+		},
+	};
+
+	const out = await resolveOutboundAttachments({
+		provider: "slack",
+		store,
+		scope,
+		attachments: [{ path: "/scopes/channel/a/slack/T/C/out.txt", scope: scope.path }],
+		logger: logger(logs),
+		context: { trace: "trace" },
+	});
+
+	assert.deepEqual(
+		out.map((file) => file.name),
+		["out.txt"],
+	);
+	assert.equal(receivedScope, scope.path);
+	assert.deepEqual(logs, []);
+});
+
+test("resolveOutboundAttachments logs missing store once", async () => {
+	const logs: Array<{ event: string; fields: Record<string, unknown> }> = [];
+
+	const out = await resolveOutboundAttachments({
+		provider: "discord",
+		attachments: [{ path: "out.txt" }],
+		logger: logger(logs),
+		context: { trace: "trace" },
+	});
+
+	assert.deepEqual(out, []);
+	assert.deepEqual(logs, [{ event: "discord.attachments_missing_store", fields: { trace: "trace" } }]);
+});
+
 test("responseBytes stops reading above the byte limit", async () => {
 	const response = new Response("hello");
 
@@ -151,4 +358,15 @@ test("responseBytes stops reading above the byte limit", async () => {
 
 function runtime(root: string, name: Runtime["name"]): Runtime {
 	return { name, root, capabilities: {} };
+}
+
+function logger(logs: Array<{ event: string; fields: Record<string, unknown> }>) {
+	return {
+		debug() {},
+		info() {},
+		warn(event: string, fields: Record<string, unknown>) {
+			logs.push({ event, fields });
+		},
+		error() {},
+	};
 }

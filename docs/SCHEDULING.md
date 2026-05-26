@@ -62,7 +62,7 @@ Custom stores that support scheduling must provide `jobs`, `jobRuns`, and `locks
 
 Agents can suppress delivery for a scheduled run by returning a structured `silent` response. The built-in Pi adapter maps an exact `[SILENT]` response to that structured flag for prompt-level ergonomics.
 
-## Intentional Non-Goals
+## Limits
 
 - chat-based job editing
 - workflow DAGs

@@ -39,6 +39,7 @@ export type ReplyAttachment = {
 	path: string;
 	name?: string;
 	mimeType?: string;
+	scope?: string;
 };
 
 export type ApprovalPrompt = {
@@ -81,6 +82,7 @@ export type ToolContinuation = {
 	threadId: string;
 	toolCallId: string;
 	tool: string;
+	actor?: string;
 	out: string;
 	err: string;
 	isError: boolean;

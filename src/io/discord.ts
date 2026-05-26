@@ -15,8 +15,10 @@ import {
 } from "discord.js";
 import { codeFence } from "../core/approval-view.js";
 import { message as errorMessage, type Logger, userError } from "../core/log.js";
+import type { ScopedKey } from "../core/scope.js";
 import type { ApprovalResolution } from "../core/types.js";
 import { chunkText } from "../render/chunk.js";
+import { resolveOutboundAttachments, saveInboundAttachments } from "./attachment-policy.js";
 import { type Attachment, type AttachmentStore, responseBytes } from "./attachments.js";
 import { runChatMessage } from "./chat-message.js";
 import { type DeliveryConfig, DeliveryQueue } from "./delivery.js";
@@ -186,9 +188,10 @@ async function handleMessage(input: {
 		handler: input.start.handler,
 		stream,
 		progress: pending,
-		loadAttachments: () =>
+		loadAttachments: (scope) =>
 			discordAttachments({
 				store: input.start.attachments,
+				scope,
 				message: msg,
 				trace,
 				provider: input.provider,
@@ -234,6 +237,7 @@ async function handleMessage(input: {
 					channel: msg.channel,
 					store: input.start.attachments,
 					attachments: out.attachments,
+					scope: out.attachmentScope,
 					logger: input.start.logger,
 					context: context(),
 					delivery: input.delivery,
@@ -425,6 +429,7 @@ async function sendDiscordOutput(input: {
 		channel: input.channel,
 		store: input.store,
 		attachments: input.out.attachments,
+		scope: input.out.attachmentScope,
 		logger: input.logger,
 		context: input.context,
 		delivery: input.delivery,
@@ -559,53 +564,38 @@ function startProgress(input: {
 
 async function discordAttachments(input: {
 	store?: AttachmentStore;
+	scope?: ScopedKey;
 	message: Message;
 	trace: string;
 	provider: string;
 	kind: string;
 	logger: Logger;
 }): Promise<Attachment[] | undefined> {
-	if (!input.store || input.message.attachments.size === 0) return undefined;
-	const attachments: Attachment[] = [];
-	for (const item of input.message.attachments.values()) {
-		try {
-			if (input.store.maxBytes !== undefined && item.size > input.store.maxBytes) {
-				input.logger.warn("discord.attachment_too_large", {
-					trace: input.trace,
-					adapter: input.provider,
-					kind: input.kind,
-					attachment: item.id,
-					size: item.size,
-					maxBytes: input.store.maxBytes,
-				});
-				continue;
-			}
-			assertDiscordAttachmentUrl(item.url);
-			const response = await fetch(item.url);
+	const maxBytes = input.store?.maxBytes;
+	return await saveInboundAttachments({
+		provider: input.provider,
+		kind: input.kind,
+		store: input.store,
+		scope: input.scope,
+		messageId: input.message.id,
+		trace: input.trace,
+		logItemField: "attachment",
+		logger: input.logger,
+		refs: input.message.attachments.map((item) => ({
+			id: item.id,
+			name: item.name,
+			mimeType: item.contentType ?? undefined,
+			size: item.size,
+			sourceUrl: item.url,
+		})),
+		download: async (item) => {
+			if (!item.sourceUrl) throw new Error("Discord attachment URL missing");
+			assertDiscordAttachmentUrl(item.sourceUrl);
+			const response = await fetch(item.sourceUrl);
 			if (!response.ok) throw new Error(`Discord attachment download failed: ${response.status}`);
-			const data = await responseBytes(response, input.store.maxBytes);
-			attachments.push(
-				await input.store.save({
-					provider: input.provider,
-					messageId: input.message.id,
-					id: item.id,
-					name: item.name,
-					mimeType: item.contentType ?? undefined,
-					data,
-					sourceUrl: item.url,
-				}),
-			);
-		} catch (error) {
-			input.logger.warn("discord.attachment_failed", {
-				trace: input.trace,
-				adapter: input.provider,
-				kind: input.kind,
-				attachment: item.id,
-				error: errorMessage(error),
-			});
-		}
-	}
-	return attachments.length ? attachments : undefined;
+			return await responseBytes(response, maxBytes);
+		},
+	});
 }
 
 export function assertDiscordAttachmentUrl(input: string): void {
@@ -625,28 +615,21 @@ async function uploadDiscordAttachments(input: {
 	channel: TextBasedChannel;
 	store?: AttachmentStore;
 	attachments?: Array<{ path: string; name?: string; mimeType?: string }>;
+	scope?: ScopedKey;
 	logger: Logger;
 	context: Record<string, unknown>;
 	delivery: DeliveryQueue;
 }): Promise<void> {
 	if (!input.attachments?.length) return;
-	if (!input.store) {
-		input.logger.warn("discord.attachments_missing_store", input.context);
-		return;
-	}
-	const files: AttachmentBuilder[] = [];
-	for (const attachment of input.attachments) {
-		try {
-			const file = await input.store.resolve(attachment);
-			files.push(new AttachmentBuilder(file.path, { name: file.name }));
-		} catch (error) {
-			input.logger.warn("discord.attachment_resolve_failed", {
-				...input.context,
-				path: attachment.path,
-				error: errorMessage(error),
-			});
-		}
-	}
+	const resolved = await resolveOutboundAttachments({
+		provider: "discord",
+		store: input.store,
+		attachments: input.attachments,
+		scope: input.scope,
+		logger: input.logger,
+		context: input.context,
+	});
+	const files = resolved.map((file) => new AttachmentBuilder(file.path, { name: file.name }));
 	if (!files.length) return;
 	await input.delivery.run(() => sendTo(input.channel, undefined, { files }), { ...input.context, retry: "send" });
 }

@@ -5,6 +5,7 @@ import { basename, extname, join } from "node:path";
 import { promisify } from "node:util";
 import type { AttachmentConfig } from "../config.js";
 import type { Logger } from "../core/log.js";
+import type { ScopedKey } from "../core/scope.js";
 import type { ReplyAttachment } from "../core/types.js";
 import { hostMkdir, hostRealPath, hostWritePath, virtualPath } from "../runtime/path.js";
 import type { Runtime } from "../runtime/types.js";
@@ -19,6 +20,7 @@ export type Attachment = {
 	provider?: string;
 	id?: string;
 	sourceUrl?: string;
+	scope?: string;
 };
 
 export type AttachmentSaveInput = {
@@ -29,12 +31,13 @@ export type AttachmentSaveInput = {
 	mimeType?: string;
 	sourceUrl?: string;
 	messageId?: string;
+	scope?: ScopedKey;
 };
 
 export interface AttachmentStore {
 	maxBytes?: number;
 	save(input: AttachmentSaveInput): Promise<Attachment>;
-	resolve(input: ReplyAttachment): Promise<ResolvedAttachment>;
+	resolve(input: ReplyAttachment, scope?: ScopedKey): Promise<ResolvedAttachment>;
 }
 
 export type ResolvedAttachment = {
@@ -72,7 +75,7 @@ export type DocumentConverterConfig =
 			mimeTypes?: string[];
 	  };
 
-/** Creates a workspace-backed attachment store. Writes files under `incoming/`. */
+/** Creates a workspace-backed attachment store. Writes inbound files under a separate scoped attachment tree. */
 export function runtimeAttachments(runtime: Runtime, config: AttachmentConfig = {}): AttachmentStore {
 	const maxBytes = config.maxBytes ?? 25_000_000;
 	return {
@@ -85,8 +88,9 @@ export function runtimeAttachments(runtime: Runtime, config: AttachmentConfig = 
 			const message = safeSegment(input.messageId ?? "unknown");
 			const provider = safeSegment(input.provider);
 			const id = safeSegment(input.id ?? randomUUID());
-			const relative = join("incoming", provider, message, `${id}-${name}`);
-			await hostMkdir(runtime.root, join("incoming", provider, message));
+			const root = attachmentRoot(input.scope);
+			const relative = join(root, "incoming", provider, message, `${id}-${name}`);
+			await hostMkdir(runtime.root, join(root, "incoming", provider, message));
 			const full = await hostWritePath(runtime.root, relative);
 			await writeFile(full, input.data);
 			return compact({
@@ -97,9 +101,11 @@ export function runtimeAttachments(runtime: Runtime, config: AttachmentConfig = 
 				provider: input.provider,
 				id: input.id,
 				sourceUrl: input.sourceUrl,
+				scope: input.scope?.path,
 			});
 		},
-		async resolve(input): Promise<ResolvedAttachment> {
+		async resolve(input, scope): Promise<ResolvedAttachment> {
+			assertAttachmentScope(input, scope);
 			const full = await hostRealPath(runtime.root, input.path);
 			const info = await stat(full);
 			if (!info.isFile()) throw new Error(`attachment is not a file: ${input.path}`);
@@ -111,6 +117,22 @@ export function runtimeAttachments(runtime: Runtime, config: AttachmentConfig = 
 			});
 		},
 	};
+}
+
+function attachmentRoot(scope: ScopedKey | undefined): string {
+	return scope ? join("attachments", "scopes", scope.path) : "";
+}
+
+function assertAttachmentScope(input: ReplyAttachment, scope: ScopedKey | undefined): void {
+	if (!scope) return;
+	if ("scope" in input && input.scope !== undefined && input.scope !== scope.path) {
+		throw new Error("attachment scope mismatch");
+	}
+	const path = input.path.replace(/^\/+/, "");
+	const allowed = [join("attachments", "scopes", scope.path), join("scopes", scope.path)];
+	if (!allowed.some((prefix) => path === prefix || path.startsWith(`${prefix}/`))) {
+		throw new Error("attachment scope mismatch");
+	}
 }
 
 export async function responseBytes(response: Response, maxBytes?: number): Promise<Uint8Array> {
@@ -330,6 +352,7 @@ function compact(input: Attachment): Attachment {
 	if (input.provider) out.provider = input.provider;
 	if (input.id) out.id = input.id;
 	if (input.sourceUrl) out.sourceUrl = input.sourceUrl;
+	if (input.scope) out.scope = input.scope;
 	return out;
 }
 

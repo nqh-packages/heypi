@@ -1,4 +1,5 @@
 import { message as errorMessage, type Logger } from "../core/log.js";
+import type { ScopedKey } from "../core/scope.js";
 import type { Attachment } from "./attachments.js";
 import type { Handler, Inbound, Outbound } from "./handler.js";
 import type { LogFields } from "./log-context.js";
@@ -21,7 +22,7 @@ export type ChatMessageRun = {
 	handler: Handler;
 	stream?: ReplyStream;
 	progress?: Progress;
-	loadAttachments?: () => Promise<Attachment[] | undefined>;
+	loadAttachments?: (scope: ScopedKey | undefined) => Promise<Attachment[] | undefined>;
 	inbound(attachments: Attachment[] | undefined): Inbound;
 	sendPrivate?: (out: Outbound) => Promise<void>;
 	placement: PlacementHandlers;
@@ -32,8 +33,10 @@ export type ChatMessageRun = {
 /** Runs a normalized chat message through the shared handler and platform-provided send callbacks. */
 export async function runChatMessage(input: ChatMessageRun): Promise<void> {
 	try {
-		const attachments = await input.loadAttachments?.();
-		const out = await input.handler({ ...input.inbound(attachments), attachments, stream: input.stream });
+		const inbound = input.inbound(undefined);
+		const scope = input.handler.attachmentScope?.(inbound);
+		const attachments = await input.loadAttachments?.(scope);
+		const out = await input.handler({ ...inbound, attachments, stream: input.stream });
 		if (!out) return;
 		if (out.private && input.sendPrivate) {
 			await input.stream?.clear?.();

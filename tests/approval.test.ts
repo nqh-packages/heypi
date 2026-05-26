@@ -580,6 +580,7 @@ test("approved tool call returns continuation metadata when it came from Pi", as
 		threadId: "thread-1",
 		toolCallId: "tool-call-1",
 		tool: "delete_ticket",
+		actor: "U_REQUESTER",
 		out: "deleted=T1",
 		err: "",
 		isError: false,

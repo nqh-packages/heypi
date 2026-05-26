@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { resolveScope } from "../src/core/scope.js";
 import { runChatMessage } from "../src/io/chat-message.js";
 import type { Handler, Outbound } from "../src/io/handler.js";
 import type { ReplyStream } from "../src/io/reply-stream.js";
@@ -39,6 +40,25 @@ test("runChatMessage loads attachments and dispatches fresh output", async () =>
 	});
 
 	assert.deepEqual(calls, ["progress.stop", "stream.clear", "fresh:done", "progress.stop"]);
+});
+
+test("runChatMessage loads attachments with the handler attachment scope", async () => {
+	const keys = resolveScope({ agent: "agent", provider: "test", kind: "test", channel: "c", actor: "u" });
+	const handler: Handler = async (input) => {
+		assert.equal(input.attachments?.[0]?.scope, keys.channel.path);
+		return { text: "done", finalPlacement: "thread" };
+	};
+	handler.attachmentScope = () => keys.channel;
+
+	await runChatMessage({
+		logger: loggerStub(),
+		context: contextStub,
+		handler,
+		loadAttachments: async (scope) => [{ name: "a.txt", path: "/tmp/a.txt", scope: scope?.path }],
+		inbound: () => inbound(),
+		placement: placementStub([]),
+		sendError: async () => undefined,
+	});
 });
 
 test("runChatMessage sends private output through the private callback", async () => {

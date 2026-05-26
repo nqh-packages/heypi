@@ -1,4 +1,5 @@
 import type { ModelConfig } from "../config.js";
+import type { TurnScope } from "../core/scope.js";
 import type { Reply, ToolContinuation } from "../core/types.js";
 import type { Attachment } from "../io/attachments.js";
 import type { ReplyStream } from "../io/reply-stream.js";
@@ -24,6 +25,7 @@ export type AgentReq = {
 	trace?: string;
 	text: string;
 	model?: ModelConfig;
+	scope?: TurnScope;
 	attachments?: Attachment[];
 	signal?: AbortSignal;
 	stream?: ReplyStream;

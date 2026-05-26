@@ -65,7 +65,7 @@ confirm: ({ ticket }) => ticket ? { message: `Delete ticket ${ticket}.` } : fals
 
 Return `false` or `undefined` to allow the call without approval. Return `{ block: "reason" }` to block the call without asking for approval.
 
-Use `message` for user-facing approval copy. `reason` is accepted for compatibility and is also user-facing when `message` is omitted. Use `policyReason` only for internal policy/audit detail, such as the command pattern that triggered approval; adapters do not show it as the main approval text.
+Use `message` for user-facing approval copy. `reason` is accepted for compatibility and is also user-facing when `message` is omitted. Use `policyReason` only for policy/audit detail, such as the command pattern that triggered approval; adapters do not show it as the main approval text.
 
 Approvers are configured at the app level:
 
@@ -198,7 +198,7 @@ const deploy = tool<{ command: string }>({
 });
 ```
 
-Approval prompts render the same structured fields in Slack, Telegram, and Discord. `message` is the user-facing reason; `policyReason` is internal audit context. Use `details` for visible fields:
+Approval prompts render the same structured fields in Slack, Telegram, and Discord. `message` is the user-facing reason; `policyReason` is audit context. Use `details` for visible fields:
 
 ```ts
 details: [
@@ -217,7 +217,7 @@ Keep detail values concise. Adapters preserve the same fields, but provider mess
 
 - Custom adapters implement the `Adapter` interface.
 - Custom stores implement the `Store` interface. Production shared stores must provide durable `locks`; scheduler-capable stores also need `jobs` and `jobRuns`. Implement `transaction()` when multiple repository updates must commit atomically.
-- Custom attachment stores implement `AttachmentStore` and are configured with `attachments: { store }`.
+- Custom attachment stores implement `AttachmentStore` and are configured with `attachments: { store }`. Stores receive the current scope on save/resolve and should reject cross-scope refs.
 - Attachment processing is configured with `attachments.process`; document conversion is optional and should run through a local converter with byte, time, and output limits.
 - Runtime behavior is configured through `runtime`, including `justBash`, `hostEnv`, timeouts, process limits, and file limits.
 - Pi extensions are loaded from explicit `agent.extensions` paths or `agent/extensions/`. heypi disables Pi's default/global extension discovery; configure each chat agent's extension set directly.

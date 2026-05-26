@@ -86,4 +86,4 @@ pnpm run pack:dry
 
 ## Migrations
 
-`heypi db migrate` applies the SQL files shipped in the package. Applied migration hashes are recorded in the database; if a migration file changes after it was applied, migration fails instead of replaying it. The initial `drizzle/0000_*.sql` file is the baseline and should be treated as immutable after release. Future schema changes should be generated as new migration files with Drizzle's statement breakpoints, not by editing the baseline.
+`heypi db migrate` applies the SQL files shipped in the package. Applied migration hashes are recorded in the database; if a migration file changes after it was applied, migration fails instead of replaying it. The initial `drizzle/0000_*.sql` file is the baseline and should be treated as immutable after release. Subsequent schema changes should be generated as new migration files with Drizzle's statement breakpoints, not by editing the baseline.
