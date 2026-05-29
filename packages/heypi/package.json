@@ -43,7 +43,6 @@
 		"bin/heypi-convert-document.py",
 		"dist",
 		"docs",
-		"CHANGELOG.md",
 		"README.md",
 		"LICENSE"
 	],
