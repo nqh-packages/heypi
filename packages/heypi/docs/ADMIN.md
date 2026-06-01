@@ -31,10 +31,11 @@ The Slack DevOps example uses `admin: { auth: false }` for local loopback develo
 heypi also writes admin state under `<state.root>/admin/`. If the startup link expires while the process is still running, mint a fresh one:
 
 ```sh
-heypi admin link
+pnpm exec heypi admin link
+npx @hunvreus/heypi admin link
 ```
 
-The command reads `server.<pid>.json` plus `HEYPI_ADMIN_SECRET` or the generated local admin secret, verifies that the descriptor still points at the same admin instance, signs a short-lived URL, and prints it. Use `--state <path>` when running outside the app folder, or `--url <url>` when you need to override the descriptor URL, for example through a tunnel or proxy. `--url` is still probed against the descriptor instance id and still needs access to the same state root because the login token is scoped to it.
+Use `pnpm exec heypi ...` or `npm exec heypi -- ...` when `@hunvreus/heypi` is installed in the app. Use `npx @hunvreus/heypi ...` when you want npm to download and run the package. The command reads `server.<pid>.json` plus `HEYPI_ADMIN_SECRET` or the generated local admin secret, verifies that the descriptor still points at the same admin instance, signs a short-lived URL, and prints it. Use `--state <path>` when running outside the app folder, or `--url <url>` when you need to override the descriptor URL, for example through a tunnel or proxy. `--url` is still probed against the descriptor instance id and still needs access to the same state root because the login token is scoped to it.
 
 For non-loopback binding, put admin behind HTTPS and an access-controlled proxy. `secureCookies: true` is required outside loopback. A manual secret is optional; without one, login is only through one-time links minted from local admin state.
 

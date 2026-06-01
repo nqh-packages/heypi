@@ -8,8 +8,13 @@
 	- Add audit views for failed turns, blocked commands, approval decisions, long-running calls, and recent delivery failures.
 - Tighten runtime provider operations.
 	- Add CLI commands for runtime provider `status`, `stop`, and `restart` once provider management stabilizes.
-	- Decide whether runtime cold-start/recovery events should be visible in admin activity.
 	- Add direct tests for provider-backed file/search behavior against real Docker/Gondolin when CI can run those dependencies.
+- Review scoped-skill resources.
+	- Decide whether scoped skills should remain single-file `SKILL.md` entries or support scoped resource files.
+	- If resource files are added, define safe paths, size limits, write/delete policy, prompt loading rules, and whether resource mutation needs separate approval.
+- Extend GitHub webhook automation.
+	- Decide whether to add labels, branches, or pull requests.
+	- Keep write-side GitHub tokens in host-side custom tools, not runtime containers.
 
 ## Later
 

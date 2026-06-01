@@ -23,6 +23,9 @@ importers:
       '@hunvreus/heypi-runtime-docker':
         specifier: workspace:*
         version: link:packages/heypi-runtime-docker
+      '@hunvreus/heypi-runtime-gondolin':
+        specifier: workspace:*
+        version: link:packages/heypi-runtime-gondolin
       '@sinclair/typebox':
         specifier: ^0.34.49
         version: 0.34.49

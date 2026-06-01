@@ -1307,6 +1307,7 @@ export function approvalBlocks(
 		...(approval.details ?? []).flatMap((detail) =>
 			labeledBlock(detail.label, detail.format === "code" ? codeFence(detail.value) : detail.value),
 		),
+		...contextBlock(`Approval ID \`${approval.id}\``),
 		...(approval.requestedBy ? contextBlock(`Requested by <@${approval.requestedBy}>`) : []),
 		...(state
 			? contextBlock(approvalResolutionText(state, actor))

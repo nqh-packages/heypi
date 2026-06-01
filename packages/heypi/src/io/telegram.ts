@@ -966,6 +966,7 @@ export function telegramApprovalText(
 		...(approval.details ?? []).map((detail) =>
 			[`${detail.label}:`, detail.format === "code" ? codeFence(detail.value) : detail.value].join("\n"),
 		),
+		`Approval ID: ${approval.id}`,
 		approval.requestedBy ? `Requested by: ${approval.requestedBy}` : undefined,
 		state ? approvalResolutionText(state, actor) : undefined,
 	]

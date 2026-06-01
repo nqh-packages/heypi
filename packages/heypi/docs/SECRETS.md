@@ -1,0 +1,68 @@
+# Secrets
+
+Secret requests let the agent ask for credentials without putting plaintext secrets in chat or model context. They are off by default.
+
+```ts
+createHeypi({
+	state: { root: "./state" },
+	// ...adapters, agent, runtime
+	secrets: true,
+});
+```
+
+When enabled, heypi exposes `secret_request`. The agent passes a reason and one or more fields:
+
+```ts
+{
+	reason: "Need a GitHub token to inspect private workflow logs.",
+	fields: [
+		{ name: "GITHUB_TOKEN", label: "GitHub token" },
+		{ name: "GITHUB_OWNER" },
+	],
+}
+```
+
+heypi returns a browser link. The user opens it, enters the values, encrypts them locally, and pastes the `heypi-secret:...` blob back into the same chat scope. heypi decrypts locally and writes the values into the active runtime workspace:
+
+```text
+.secrets/GITHUB_TOKEN
+.secrets/GITHUB_OWNER
+```
+
+The encrypted blob is intercepted before the normal model turn, so it is not stored as chat history and is not sent to the model.
+
+## Self Hosting
+
+The default page URL is:
+
+```text
+https://heypi.dev/secret
+```
+
+That page is static client-side code. It receives the public key and request metadata in the URL fragment, encrypts locally with WebCrypto, and does not need server-side access to your heypi instance. It uses generated Basecoat CSS and no JavaScript UI widgets.
+
+To self-host the page from your own heypi app:
+
+```ts
+createHeypi({
+	state: { root: "./state" },
+	// ...adapters, agent, runtime
+	http: { host: "0.0.0.0", port: 3000 },
+	secrets: {
+		url: "https://203-0-113-10.sslip.io/secret",
+		serve: true,
+	},
+});
+```
+
+`secrets.url` is the public URL placed in chat. With `serve: true`, heypi serves the static page at that URL's path and the companion stylesheet at the same path with `.css` appended. Use HTTPS for real secrets.
+
+## Security Model
+
+- The private key stays in the heypi process memory and expires with the request.
+- Pending secret requests are lost on process restart.
+- Secret values are stored as scoped runtime files, not memory.
+- Field `name` is the stable file/env-style key; `label` is optional display text.
+- Anyone who can read the scoped runtime workspace can read saved secrets.
+
+Use narrow runtime scope and runtime isolation for sensitive credentials.

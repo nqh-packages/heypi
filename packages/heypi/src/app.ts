@@ -11,6 +11,15 @@ import { MemoryStore, normalizeMemoryConfig } from "./core/memory.js";
 import { normalizeMessages } from "./core/messages.js";
 import { createScheduler } from "./core/scheduler.js";
 import { ScopedRuntimeRegistry } from "./core/scope.js";
+import {
+	normalizeSecretsConfig,
+	SecretStore,
+	secretCss,
+	secretPage,
+	secretRoute,
+	secretStyleRoute,
+} from "./core/secrets.js";
+import { normalizeSkillsConfig, SkillStore } from "./core/skills.js";
 import { splitTools } from "./core-tools.js";
 import { runtimeAttachments } from "./io/attachments.js";
 import { type Adapter, type AdapterStart, createHandler, createStatus } from "./io/handler.js";
@@ -68,6 +77,13 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 		approvers: config.approval?.approvers,
 	});
 	const memory = new MemoryStore(config.runtime.root, memoryConfig);
+	const skillsConfig = normalizeSkillsConfig(config.skills, {
+		scope: config.scope,
+		approvers: config.approval?.approvers,
+	});
+	const skills = new SkillStore(config.runtime.root, skillsConfig);
+	const secretsConfig = normalizeSecretsConfig(config.secrets);
+	const secrets = new SecretStore(secretsConfig);
 	const attachments = config.attachments?.store ?? runtimeAttachments(appRuntime, config.attachments);
 	const queue = new Queue({
 		maxConcurrent: config.runtime.maxConcurrent ?? 12,
@@ -100,6 +116,8 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 		messages: store.messages,
 		attachments: config.attachments?.process,
 		memory,
+		skills,
+		secrets,
 		approvalApprovers: config.approval?.approvers,
 		logger: log,
 		appMessages: messages,
@@ -114,6 +132,9 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 		scope: config.scope,
 		runtimeScope: config.runtime.scope,
 		memoryScope: memoryConfig.scope,
+		skillsScope: skillsConfig.scope,
+		secrets,
+		runtime,
 		messages,
 		active,
 		lockMs: config.runtime.timeoutMs,
@@ -132,6 +153,32 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 	});
 	const appLock = appLockState(config.agent.id, config.appLock);
 	const http = createHttpServerRegistry({ logger: log, listen: httpConfig });
+	if (secretsConfig.enabled && secretsConfig.serve) {
+		http.register({
+			method: "GET",
+			path: secretRoute(secretsConfig.url),
+			handler: (_req, res) => {
+				res.writeHead(200, {
+					"content-type": "text/html; charset=utf-8",
+					"cache-control": "no-store",
+					"x-content-type-options": "nosniff",
+				});
+				res.end(secretPage());
+			},
+		});
+		http.register({
+			method: "GET",
+			path: secretStyleRoute(secretsConfig.url),
+			handler: (_req, res) => {
+				res.writeHead(200, {
+					"content-type": "text/css; charset=utf-8",
+					"cache-control": "no-store",
+					"x-content-type-options": "nosniff",
+				});
+				res.end(secretCss());
+			},
+		});
+	}
 	let appStartedAt = Date.now();
 
 	let ready: Promise<void> | undefined;
@@ -168,6 +215,21 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 					writePolicy: memoryConfig.writePolicy,
 				});
 			}
+			if (skillsConfig.enabled) {
+				const level = skillsConfig.writePolicy === "off" ? "warn" : "info";
+				log[level]("skills.enabled", {
+					agent: config.agent.id,
+					scope: skillsConfig.scope,
+					writePolicy: skillsConfig.writePolicy,
+				});
+			}
+			if (secretsConfig.enabled) {
+				log.info("secrets.enabled", {
+					agent: config.agent.id,
+					url: secretsConfig.url,
+					serve: secretsConfig.serve,
+				});
+			}
 			for (const adapter of lifecycleAdapters) {
 				const start = {
 					handler,
@@ -185,6 +247,7 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 						runtime: { name: appRuntime.name, root: config.runtime.root },
 						state: { root: stateRoot },
 						memory: memoryConfig,
+						skills: skillsConfig,
 						adapters: config.adapters.map((item) => ({ name: item.name, kind: item.kind })),
 						startedAt: appStartedAt,
 					},

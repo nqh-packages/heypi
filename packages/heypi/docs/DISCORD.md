@@ -20,7 +20,7 @@ Check:
 pnpm exec heypi discord check --env examples/discord-project/.env
 ```
 
-For a runnable app, see [`examples/discord-project`](https://github.com/hunvreus/heypi/tree/main/examples/discord-project). It includes streaming, core tools, and an approval-gated status update tool.
+For a runnable app, see [`examples/discord-project`](https://github.com/hunvreus/heypi/tree/main/examples/discord-project). It includes streaming, a channel-scoped Gondolin runtime, memory, scoped skills, secret requests, and generated-file attachments.
 
 Generate an invite URL:
 

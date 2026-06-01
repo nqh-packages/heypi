@@ -10,9 +10,11 @@ import type { MemoryStore, NormalizedMemoryConfig } from "../core/memory.js";
 import { type AppMessages, DEFAULT_APP_MESSAGES } from "../core/messages.js";
 import type { ScopedKey, TurnScope } from "../core/scope.js";
 import { resolveScope, selectScope } from "../core/scope.js";
+import { isSecretReply, type SecretStore } from "../core/secrets.js";
+import type { NormalizedSkillsConfig } from "../core/skills.js";
 import type { ApprovalPrompt, ApprovalResolution, Intent, ReplyAttachment } from "../core/types.js";
 import type { Agent } from "../runtime/agent.js";
-import type { RuntimeEventHandler } from "../runtime/types.js";
+import type { Runtime, RuntimeEventHandler } from "../runtime/types.js";
 import { transaction } from "../store/transaction.js";
 import { continueTool, saveReply } from "../store/transcript.js";
 import type { Store } from "../store/types.js";
@@ -97,6 +99,7 @@ export type AdapterStart = {
 		runtime: { name: string; root: string };
 		state: { root: string };
 		memory: NormalizedMemoryConfig;
+		skills?: NormalizedSkillsConfig;
 		adapters: Array<{ name: string; kind: string }>;
 		startedAt: number;
 	};
@@ -158,6 +161,9 @@ export function createHandler(input: {
 	scope?: Scope;
 	runtimeScope?: Scope;
 	memoryScope?: Scope;
+	skillsScope?: Scope;
+	secrets?: SecretStore;
+	runtime?: (scope?: string) => Runtime;
 	messages?: AppMessages;
 	active?: ActiveRuns;
 	lockMs?: number;
@@ -180,6 +186,7 @@ export function createHandler(input: {
 		return {
 			workspace: selectScope(keys, input.runtimeScope ?? input.scope),
 			memory: selectScope(keys, input.memoryScope ?? input.scope),
+			skills: selectScope(keys, input.skillsScope ?? input.scope),
 			keys,
 		};
 	};
@@ -215,6 +222,37 @@ export function createHandler(input: {
 			key: msg.thread,
 		});
 		const turnScope = scopeFor(msg);
+		if (isSecretReply(rawText)) {
+			try {
+				const completed = input.secrets?.complete(rawText, turnScope.workspace);
+				if (!completed) return { text: "Secret request expired, invalid, or for another scope.", private: true };
+				const runtime = input.runtime?.(turnScope.workspace.path);
+				const write = runtime?.write?.bind(runtime);
+				if (!write) throw new Error("selected runtime does not support writing secret files");
+				await Promise.all(completed.files.map((file) => write({ path: file.path, content: file.value })));
+				log.info("secret.saved", {
+					trace,
+					agent: agentId,
+					provider: msg.provider,
+					channel: msg.channel,
+					thread: thread.id,
+					actor: msg.actor,
+					fields: completed.files.map((file) => file.name).join(","),
+				});
+				return { text: `Secret saved: ${completed.files.map((file) => file.path).join(", ")}`, private: true };
+			} catch (error) {
+				logError(log, "handler", {
+					trace,
+					agent: agentId,
+					provider: msg.provider,
+					channel: msg.channel,
+					thread: thread.id,
+					actor: msg.actor,
+					error: message(error),
+				});
+				return { text: "Secret could not be saved. Request a fresh secret link and try again.", private: true };
+			}
+		}
 		const lockKey = `thread:${thread.id}`;
 		const lockOwner = `${trace}:${randomUUID()}`;
 		if (intent.kind === "cancel") {

@@ -2,7 +2,7 @@
 
 The webhook adapter exposes a generic JSON HTTP interface for internal systems.
 
-For a tiny runnable app with curl examples, see [`examples/webhook-notes`](https://github.com/hunvreus/heypi/tree/main/examples/webhook-notes).
+For a runnable advanced webhook app with curl examples, see [`examples/webhook-github-docker`](https://github.com/hunvreus/heypi/tree/main/examples/webhook-github-docker). It shows a trusted GitHub issue automation that uses host-side GitHub tools for API reads/writes and Docker for repo inspection.
 
 ```ts
 createHeypi({

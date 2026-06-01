@@ -101,6 +101,7 @@ test("Slack approval resolution preserves approval blocks and replaces actions",
 	assert.ok(pending);
 	assert.ok(rejected);
 	assert.match(JSON.stringify(pending[0]), /Approval required/);
+	assert.match(JSON.stringify(pending), /Approval ID `approval-1`/);
 	assert.match(JSON.stringify(rejected[0]), /Rejected/);
 	assert.equal(pending.at(-1)?.type, "actions");
 	assert.equal(rejected.at(-1)?.type, "context");

@@ -128,6 +128,28 @@ export type MemoryConfig =
 			maxChars?: number;
 	  };
 
+export type SkillWritePolicy = "auto" | "approvers" | "off";
+
+export type SkillsConfig =
+	| boolean
+	| {
+			enabled?: boolean;
+			scope?: Scope;
+			writePolicy?: SkillWritePolicy;
+			maxSkills?: number;
+			maxChars?: number;
+	  };
+
+export type SecretsConfig =
+	| boolean
+	| {
+			enabled?: boolean;
+			url?: string;
+			serve?: boolean;
+			expiresInMs?: number;
+			maxFields?: number;
+	  };
+
 export type AppLockConfig = {
 	ttlMs?: number;
 	drainMs?: number;
@@ -151,6 +173,8 @@ export type HeypiConfig = {
 	chat?: ChatConfig;
 	scope?: Scope;
 	memory?: MemoryConfig;
+	skills?: SkillsConfig;
+	secrets?: SecretsConfig;
 	messages?: AppMessagesConfig;
 	appLock?: false | AppLockConfig;
 	scheduler?: Omit<SchedulerConfig, "jobs">;

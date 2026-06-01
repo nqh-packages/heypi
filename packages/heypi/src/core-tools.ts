@@ -4,7 +4,7 @@ import type { Confirm } from "./core/types.js";
 
 const CORE_TOOL = Symbol("core-tool");
 
-export type CoreToolName = "history" | "bash" | "read" | "write" | "edit" | "grep" | "find" | "ls";
+export type CoreToolName = "history" | "bash" | "read" | "write" | "edit" | "grep" | "find" | "ls" | "attach";
 
 export type CoreToolConfig = {
 	confirm?: Confirm;
@@ -31,6 +31,7 @@ const DEFAULT_CORE: Required<CoreToolsConfig> = {
 	grep: true,
 	find: true,
 	ls: true,
+	attach: true,
 };
 
 export function coreTools(config: CoreToolsConfig = {}): CoreToolDefinition[] {

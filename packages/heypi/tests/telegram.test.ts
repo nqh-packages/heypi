@@ -37,6 +37,7 @@ test("Telegram approval resolution preserves approval text and appends status", 
 	const approved = telegramApprovalText("ignored", approval, "approved", "user 42");
 
 	assert.match(pending, /^\*Approval required\*/);
+	assert.match(pending, /Approval ID: approval-1/);
 	assert.match(approved, /^\*Approved\*/);
 	assert.match(approved, /Reason:\nRun bash command/);
 	assert.match(approved, /Approved by user 42/);

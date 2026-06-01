@@ -109,3 +109,9 @@ Unauthorized button actions get private provider-native feedback where the provi
 Adapter sends are serialized by default. Provider rate limits are retried with backoff. Ambiguous timeouts are not retried for non-idempotent sends such as new messages or file uploads.
 
 Most apps should keep the defaults. If a provider needs slower pacing, set `delivery: { intervalMs: 500 }`; use `delivery: false` only for development or custom transport control.
+
+## Generated Files
+
+The default core tool set includes `attach`. When the agent creates a file that should be part of the answer, it can call `attach` with the runtime workspace path. heypi resolves the file against the current scope and the adapter uploads it with the final reply.
+
+Attachments are explicit. heypi does not automatically upload every file the agent writes, because many generated files are temporary, private, or intermediate artifacts.

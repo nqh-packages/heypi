@@ -1,8 +1,9 @@
+import { join } from "node:path";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import type { CallContext } from "../core/calls.js";
 import { type Logger, logger } from "../core/log.js";
-import type { Confirm, Reply, ToolExecute } from "../core/types.js";
+import type { Confirm, Reply, ReplyAttachment, ToolExecute } from "../core/types.js";
 import { type CoreToolDefinition, type CoreToolName, coreTools } from "../core-tools.js";
 import type { Messages } from "../store/types.js";
 import { toolConfirm, toolPiRunner, toolRunner } from "../tool-internal.js";
@@ -34,6 +35,7 @@ export function tools(input: {
 	context?: CallContext;
 	core?: CoreToolDefinition[];
 	custom?: ToolDefinition[];
+	attachments?: ReplyAttachment[];
 	logger?: Logger;
 }): ToolDefinition[] {
 	const log = input.logger ?? logger;
@@ -45,6 +47,7 @@ export function tools(input: {
 		input.actor,
 		input.context,
 		input.core,
+		input.attachments,
 	);
 	const merged = new Map(base.map((tool) => [tool.name, tool]));
 	for (const tool of input.custom ?? []) {
@@ -119,6 +122,7 @@ function runtimeTools(
 	actor: string,
 	context?: CallContext,
 	coreTools?: CoreToolDefinition[],
+	attachments?: ReplyAttachment[],
 ): ToolDefinition[] {
 	const out: ToolDefinition[] = [];
 	const core = coreMap(coreTools);
@@ -295,6 +299,34 @@ function runtimeTools(
 			},
 		});
 	}
+	if (enabled(core, "attach") && context?.runtimeScope && attachments) {
+		const runtimeScope = context.runtimeScope;
+		out.push({
+			name: "attach",
+			label: "Attach",
+			description:
+				"Attach a file from the runtime workspace to the final chat reply. Use this after creating a report, image, archive, or other artifact the user should receive. Do not attach temporary, private, or intermediate files.",
+			parameters: Type.Object({
+				path: Type.String({ minLength: 1 }),
+				name: Type.Optional(Type.String()),
+				mimeType: Type.Optional(Type.String()),
+			}),
+			execute: async (id, params) => {
+				void id;
+				const path = scopedAttachmentPath(runtimeScope, stringParam(params, "path"));
+				const name = optionalString(params, "name");
+				const mimeType = optionalString(params, "mimeType");
+				const attachment = {
+					path,
+					scope: runtimeScope,
+					...(name ? { name } : {}),
+					...(mimeType ? { mimeType } : {}),
+				};
+				attachments.push(attachment);
+				return text(`attached ${attachment.name ?? stringParam(params, "path")}`);
+			},
+		});
+	}
 	return out;
 }
 
@@ -304,4 +336,13 @@ function coreMap(input: CoreToolDefinition[] | undefined): Map<CoreToolName, Cor
 
 function enabled(core: Map<CoreToolName, CoreToolDefinition>, name: CoreToolName): boolean {
 	return core.has(name);
+}
+
+function scopedAttachmentPath(runtimeScope: string, path: string): string {
+	const clean = path.trim().replace(/^\/+/, "");
+	if (!clean || clean === ".") throw new Error("path is required");
+	if (clean.includes("\0")) throw new Error("path contains invalid character");
+	if (clean.split(/[\\/]+/).some((part) => part === "..")) throw new Error("path escapes runtime scope");
+	const scopedPrefix = join("scopes", runtimeScope);
+	return clean === scopedPrefix || clean.startsWith(`${scopedPrefix}/`) ? clean : join(scopedPrefix, clean);
 }

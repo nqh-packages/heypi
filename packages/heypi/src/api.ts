@@ -21,6 +21,9 @@ export {
 	type RuntimeConfig,
 	type RuntimeLimits,
 	type Scope,
+	type SecretsConfig,
+	type SkillsConfig,
+	type SkillWritePolicy,
 	type StateConfig,
 } from "./config.js";
 export { consoleLogger, type Format, type Level, type Logger } from "./core/log.js";

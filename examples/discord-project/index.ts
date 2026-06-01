@@ -1,9 +1,7 @@
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
 import { loadEnvFile } from "node:process";
-import { agentFrom, coreTools, createHeypi, discord, runHeypi, tool, workspace } from "@hunvreus/heypi";
-import { Type } from "@sinclair/typebox";
+import { agentFrom, coreTools, createHeypi, discord, runHeypi, workspace } from "@hunvreus/heypi";
+import { gondolinRuntime } from "@hunvreus/heypi-runtime-gondolin";
 
 loadEnv(".env");
 
@@ -24,62 +22,14 @@ function list(name: string): string[] {
 		.filter(Boolean);
 }
 
-const stateRoot = "./state";
-const notesPath = join(stateRoot, "project-notes.md");
-
-const projectNote = tool<{ note: string; project?: string }>({
-	name: "project_note",
-	description: "Append a short project note to the local project log.",
-	parameters: Type.Object({
-		note: Type.String({ description: "Concise note to save." }),
-		project: Type.Optional(Type.String({ description: "Project or workstream name." })),
-	}),
-	execute: async ({ note, project }) => {
-		await mkdir(dirname(notesPath), { recursive: true });
-		const prefix = project ? `[${project}] ` : "";
-		await appendFile(notesPath, `- ${new Date().toISOString()} ${prefix}${note}\n`, "utf8");
-		return "project note saved";
-	},
-});
-
-const setProjectStatus = tool<{ project: string; status: string; reason: string }>({
-	name: "set_project_status",
-	description: "Append an approved project status update.",
-	parameters: Type.Object({
-		project: Type.String({ description: "Project or workstream name." }),
-		status: Type.String({ description: "New status, e.g. on track, blocked, at risk, shipped." }),
-		reason: Type.String({ description: "Short reason for the status change." }),
-	}),
-	confirm: ({ project, status, reason }) => ({
-		message: "Update project status.",
-		details: [
-			{ label: "Project", value: String(project) },
-			{ label: "Status", value: String(status) },
-			{ label: "Reason", value: String(reason) },
-		],
-	}),
-	execute: async ({ project, status, reason }) => {
-		await mkdir(dirname(notesPath), { recursive: true });
-		await appendFile(notesPath, `- ${new Date().toISOString()} [${project}] status=${status}; ${reason}\n`, "utf8");
-		return `status updated: ${project} is ${status}`;
-	},
-});
-
-const readProjectNotes = tool({
-	name: "read_project_notes",
-	description: "Read saved project notes.",
-	parameters: Type.Object({}),
-	execute: async () => {
-		try {
-			return await readFile(notesPath, "utf8");
-		} catch {
-			return "No project notes yet.";
-		}
-	},
-});
-
 const app = createHeypi({
-	state: { root: stateRoot },
+	state: { root: "./state" },
+	http: {
+		host: "127.0.0.1",
+		port: 3000,
+	},
+	admin: true,
+	scope: "channel",
 	adapters: [
 		discord({
 			token: required("DISCORD_BOT_TOKEN"),
@@ -94,13 +44,28 @@ const app = createHeypi({
 	],
 	agent: agentFrom("./agent", {
 		model: "openai/gpt-5-mini",
-		tools: [...coreTools(), projectNote, setProjectStatus, readProjectNotes],
+		tools: coreTools({ bash: true }),
 	}),
 	approval: {
 		approvers: list("HEYPI_APPROVERS"),
 		expiresInMs: 10 * 60 * 1000,
 	},
-	runtime: { root: workspace("./workspace") },
+	runtime: {
+		root: workspace("./workspace"),
+		scope: "channel",
+		provider: gondolinRuntime({
+			idleMs: 10 * 60 * 1000,
+		}),
+	},
+	memory: true,
+	skills: {
+		enabled: true,
+		scope: "channel",
+	},
+	secrets: {
+		url: "http://127.0.0.1:3000/secret",
+		serve: true,
+	},
 });
 
 await runHeypi(app);

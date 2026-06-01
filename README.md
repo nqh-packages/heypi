@@ -8,28 +8,29 @@
 
 # heypi
 
-Chat agents for your team, with approvals and sandboxed tools. Slack, Discord, Telegram, webhooks.
+Chat agents for your team, with approvals, durable state, and sandboxed tools. Slack, Discord, Telegram, and webhooks.
 
-This repository is a pnpm workspace for the core package and optional runtime providers.
+This repo contains the core heypi package, optional runtime providers, and runnable examples.
 
-Start here: [`@hunvreus/heypi` quickstart](packages/heypi/README.md).
+## Start Here
 
-## Packages
+- Use heypi in an app: [`packages/heypi`](packages/heypi/README.md)
+- Add Docker runtime isolation: [`packages/heypi-runtime-docker`](packages/heypi-runtime-docker/README.md)
+- Add Gondolin VM runtime isolation: [`packages/heypi-runtime-gondolin`](packages/heypi-runtime-gondolin/README.md)
 
-| Package | Stability | Description |
-| --- | --- | --- |
-| [`@hunvreus/heypi`](packages/heypi/README.md) | Early | Core chat-agent runtime, adapters, admin UI, tools, scheduler, and CLI. |
-| [`@hunvreus/heypi-runtime-docker`](packages/heypi-runtime-docker/README.md) | Experimental | Docker runtime provider with one warm container per heypi runtime scope. |
-| [`@hunvreus/heypi-runtime-gondolin`](packages/heypi-runtime-gondolin/README.md) | Experimental | Gondolin runtime provider with one warm VM per heypi runtime scope. |
+## What Is In This Repo
 
-## Examples
+| Path | What it is |
+| --- | --- |
+| [`packages/heypi`](packages/heypi) | Core framework: adapters, tools, approvals, state, admin UI, scheduler, CLI. |
+| [`packages/heypi-runtime-docker`](packages/heypi-runtime-docker) | Experimental Docker runtime provider with one warm container per runtime scope. |
+| [`packages/heypi-runtime-gondolin`](packages/heypi-runtime-gondolin) | Experimental Gondolin runtime provider with one warm VM per runtime scope. |
+| [`examples/slack-devops`](examples/slack-devops) | Slack DevOps assistant with runtime tools, runbooks, memory, secrets, SSH host inventory, and approvals. |
+| [`examples/discord-project`](examples/discord-project) | Discord project assistant with Gondolin, memory, scoped skills, secret requests, and file attachments. |
+| [`examples/telegram-workout`](examples/telegram-workout) | Telegram fitness coach with saved profile/plan and heartbeat check-ins. |
+| [`examples/webhook-github-docker`](examples/webhook-github-docker) | GitHub issue automation with webhook input, Docker repo inspection, and trusted GitHub writeback. |
 
-- [`examples/slack-devops`](examples/slack-devops): Slack DevOps assistant with runtime tools, runbook search, approvals, SSH host tools, and host inventory.
-- [`examples/discord-project`](examples/discord-project): Discord project assistant with streaming, approvals, and simple project-state tools.
-- [`examples/telegram-workout`](examples/telegram-workout): Telegram fitness coach with saved profile/plan and daily heartbeat check-ins.
-- [`examples/webhook-notes`](examples/webhook-notes): tiny webhook note-taking agent with curl examples.
-
-## Development
+## Local Development
 
 ```bash
 pnpm install
@@ -37,16 +38,22 @@ pnpm run check
 pnpm run typecheck
 pnpm run test
 pnpm run build:all
-pnpm run pack:dry:packages
 ```
 
-Useful local runs:
+Run examples:
 
 ```bash
 pnpm run dev:slack
 pnpm run dev:discord
 pnpm run dev:telegram
 pnpm run dev:webhook
+```
+
+Dry-run packages before publishing:
+
+```bash
+pnpm run pack:dry:packages
+pnpm run publish:dry:packages
 ```
 
 ## License

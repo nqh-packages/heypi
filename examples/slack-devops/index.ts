@@ -67,6 +67,10 @@ const app = createHeypi({
 	state: { root: stateRoot },
 	logger: log,
 	admin: true,
+	secrets: {
+		url: "http://127.0.0.1:3000/secret",
+		serve: true,
+	},
 	adapters: [
 		slack({
 			botToken: required("SLACK_BOT_TOKEN"),
@@ -130,6 +134,7 @@ const app = createHeypi({
 		root: workspace("./workspace"),
 		scope: "channel",
 	},
+	memory: true,
 });
 
 await runHeypi(app);

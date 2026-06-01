@@ -86,7 +86,7 @@ For private channels, invite the bot to the channel, add the Slack `groups:read`
 pnpm exec heypi slack channels --env examples/slack-devops/.env --private
 ```
 
-When running the Slack example locally, open `http://127.0.0.1:3000/admin`. Auth is disabled in that local loopback example. For apps with `admin: true`, heypi logs a one-time admin login link at startup; if it expires while the app is still running, mint a fresh link with `pnpm heypi admin link --state <state-root>`.
+When running the Slack example locally, open `http://127.0.0.1:3000/admin`. Auth is disabled in that local loopback example. For apps with `admin: true`, heypi logs a one-time admin login link at startup; if it expires while the app is still running, mint a fresh link with `pnpm exec heypi admin link --state <state-root>` or `npx @hunvreus/heypi admin link --state <state-root>`.
 
 When `HEYPI_SLACK_JOB_CHANNEL` is set, the Slack example configures two app-level jobs:
 

@@ -121,13 +121,25 @@ Core tools and custom `tool()` definitions use the same confirmation path. Text 
 - `@hunvreus/heypi-runtime-docker`: experimental external Docker provider with one warm container per runtime scope.
 - `@hunvreus/heypi-runtime-gondolin`: experimental external Gondolin provider with one warm VM per runtime scope.
 
-`scope` controls workspace sharing: `channel` by default, or `user`, `adapter`, or `agent`. `runtime.scope` can override that runtime/workspace sharing policy independently from memory. File tools enforce size, traversal, and symlink escape limits. `just-bash` disables network by default. Managed runtimes are implemented as `RuntimeProvider`s and can keep scoped runtimes warm until idle timeout, provider shutdown, or explicit management calls.
+`scope` controls workspace sharing: `channel` by default, or `user`, `adapter`, or `agent`. `runtime.scope` can override that runtime/workspace sharing policy independently from memory and skills. File tools enforce size, traversal, and symlink escape limits. `just-bash` disables network by default. Managed runtimes are implemented as `RuntimeProvider`s and can keep scoped runtimes warm until idle timeout, provider shutdown, or explicit management calls. Docker and Gondolin default to a 10-minute idle timeout; `idleMs: false` disables idle shutdown.
 
 ### Memory
 
 Memory is optional durable context, not transcript storage. When enabled, heypi stores one `MEMORY.md` per memory scope and injects it before the model turn.
 
 Memory writes are controlled by `memory.writePolicy`. The default becomes `approvers` when `approval.approvers` is configured. Secret and prompt-injection checks are hygiene only; app authors should treat memory as user-influenced context.
+
+### Scoped Skills
+
+Scoped skills are optional durable procedures. When enabled, heypi stores one `SKILL.md` per skill under `skills/scopes/<scope-key>/<skill>/`, injects a compact skill catalog, and exposes `skill_list`, `skill_read`, `skill_write`, `skill_patch`, and `skill_delete`.
+
+Skill writes are controlled by `skills.writePolicy`. Defaults are conservative: writes are `approvers` only when `approval.approvers` is configured, otherwise `off`. Scoped skills are user-authored guidance, not trusted policy. heypi does not include registry install/sync or supporting-file tools for scoped skills yet.
+
+### Secrets
+
+Secret requests are optional encrypted handoffs. When enabled, the agent can call `secret_request` with one or more named fields. heypi generates a request-scoped RSA keypair, sends only the public key in the browser link, decrypts the pasted encrypted blob locally, and writes values as scoped runtime files under `.secrets/`.
+
+The hosted page at `heypi.dev/secret` is static client-side code. Apps can self-host the same page with `secrets.url` and `serve: true`; heypi serves it at the URL path.
 
 ### Store
 
@@ -146,6 +158,8 @@ SQLite supports local single-process deployments. Multi-instance deployments nee
 `src/io/attachments.ts` keeps inbound uploads in a scoped attachment tree under `runtime.root/attachments/scopes/<scope-key>`. Attachment refs from another scope are rejected under the default `channel` scope.
 
 Supported images go to Pi as image inputs. Text-like files are inlined. Optional document conversion uses the configured local converter. Unsupported or failed conversions remain attachment references.
+
+Outbound generated files are explicit. The built-in `attach` tool records a file from the current scoped runtime workspace, and adapters resolve/upload it with the final reply. heypi does not automatically upload every file the agent writes.
 
 ### Delivery And Streaming
 

@@ -28,6 +28,7 @@ export type ScopeKeys = {
 export type TurnScope = {
 	workspace: ScopedKey;
 	memory: ScopedKey;
+	skills: ScopedKey;
 	keys: ScopeKeys;
 };
 

@@ -8,24 +8,23 @@ import {
 	type ResourceLoader,
 	SessionManager,
 	SettingsManager,
-	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
 import type { AgentConfig, AgentContextBlock, AgentContextInput, ModelConfig } from "../config.js";
 import { normalizeApprovalDetails } from "../core/approval-view.js";
 import { type CallRunner, RUNTIME_EVENTS } from "../core/calls.js";
 import { type Logger, logError, logger, redact, userError } from "../core/log.js";
 import { type MemoryStore, memoryContext } from "../core/memory.js";
 import { type AppMessages, DEFAULT_APP_MESSAGES } from "../core/messages.js";
-import type { ScopedKey } from "../core/scope.js";
-import type { ApprovalPrompt, ToolContinuation } from "../core/types.js";
+import type { SecretStore } from "../core/secrets.js";
+import { type SkillStore, skillsContext } from "../core/skills.js";
+import type { ApprovalPrompt, ReplyAttachment, ToolContinuation } from "../core/types.js";
 import { splitTools } from "../core-tools.js";
 import { type AttachmentProcessingConfig, attachmentInput } from "../io/attachments.js";
 import type { ReplyStream } from "../io/reply-stream.js";
 import type { Messages, StoredMessage } from "../store/types.js";
 import type { Agent, AgentReq, AgentRes } from "./agent.js";
 import { runtimeWithEvents } from "./events.js";
-import { stringParam } from "./tool-util.js";
+import { memoryTools, secretTools, skillTools } from "./managed-tools.js";
 import { tools } from "./tools.js";
 import type { Runtime, RuntimeEventHandler } from "./types.js";
 
@@ -43,6 +42,8 @@ export type PiAgentInput = {
 	messages: Messages;
 	attachments?: AttachmentProcessingConfig;
 	memory?: MemoryStore;
+	skills?: SkillStore;
+	secrets?: SecretStore;
 	approvalApprovers?: string[];
 	logger?: Logger;
 	appMessages?: AppMessages;
@@ -52,43 +53,58 @@ export class PiAgent implements Agent {
 	constructor(private readonly input: PiAgentInput) {}
 
 	async ask(req: AgentReq): Promise<AgentRes> {
-		const session = await this.create(req.channel, req.actor, req, {
-			trace: req.trace,
-			agent: this.input.agent.id,
-			provider: req.provider,
-			channelName: req.channelName,
-			thread: req.threadId,
-			providerThread: req.thread,
-			threadName: req.threadName,
-			turn: req.turnId,
-			message: req.inputMessageId,
-			actorName: req.actorName,
-			model: req.model,
-		});
-		return await this.run({ mode: "prompt", session, generatedAt: session.messages.length + 1, req });
+		const attachments: ReplyAttachment[] = [];
+		const session = await this.create(
+			req.channel,
+			req.actor,
+			req,
+			{
+				trace: req.trace,
+				agent: this.input.agent.id,
+				provider: req.provider,
+				channelName: req.channelName,
+				thread: req.threadId,
+				providerThread: req.thread,
+				threadName: req.threadName,
+				turn: req.turnId,
+				message: req.inputMessageId,
+				actorName: req.actorName,
+				model: req.model,
+			},
+			attachments,
+		);
+		return await this.run({ mode: "prompt", session, generatedAt: session.messages.length + 1, req, attachments });
 	}
 
 	async continue(
 		req: Omit<AgentReq, "text" | "inputMessageId"> & { continuation?: ToolContinuation },
 	): Promise<AgentRes> {
 		if (req.continuation) appendToolResult(this.sessionManager(req), req.continuation);
-		const session = await this.create(req.channel, req.actor, req, {
-			trace: req.trace,
-			agent: this.input.agent.id,
-			provider: req.provider,
-			channelName: req.channelName,
-			thread: req.threadId,
-			providerThread: req.thread,
-			threadName: req.threadName,
-			turn: req.turnId,
-			actorName: req.actorName,
-			model: req.model,
-		});
+		const attachments: ReplyAttachment[] = [];
+		const session = await this.create(
+			req.channel,
+			req.actor,
+			req,
+			{
+				trace: req.trace,
+				agent: this.input.agent.id,
+				provider: req.provider,
+				channelName: req.channelName,
+				thread: req.threadId,
+				providerThread: req.thread,
+				threadName: req.threadName,
+				turn: req.turnId,
+				actorName: req.actorName,
+				model: req.model,
+			},
+			attachments,
+		);
 		return await this.run({
 			mode: "continue",
 			session,
 			generatedAt: session.messages.length,
 			req: { ...req, text: "" },
+			attachments,
 		});
 	}
 
@@ -97,6 +113,7 @@ export class PiAgent implements Agent {
 		session: AgentSession;
 		generatedAt: number;
 		req: AgentReq;
+		attachments: ReplyAttachment[];
 	}): Promise<AgentRes> {
 		const { mode, session, generatedAt, req } = input;
 		const log = this.input.logger ?? logger;
@@ -249,7 +266,12 @@ export class PiAgent implements Agent {
 			actor: req.actor,
 			chars: text.length,
 		});
-		return { text: silent ? "" : text, silent, approval };
+		return {
+			text: silent ? "" : text,
+			silent,
+			approval,
+			...(!silent && !approval && input.attachments.length ? { attachments: input.attachments } : {}),
+		};
 	}
 
 	private async create(
@@ -269,6 +291,7 @@ export class PiAgent implements Agent {
 			actorName?: string;
 			model?: AgentReq["model"];
 		},
+		attachments: ReplyAttachment[],
 	): Promise<AgentSession> {
 		const agent = this.input.agent;
 		const modelConfig = context.model ?? agent.model;
@@ -300,6 +323,11 @@ export class PiAgent implements Agent {
 				? memoryContext(req.scope.memory, await this.input.memory.read(req.scope.memory))
 				: undefined;
 		if (memoryBlock) contextBlocks.push(memoryBlock);
+		const skillsBlock =
+			this.input.skills && req.scope
+				? skillsContext(req.scope.skills, await this.input.skills.list(req.scope.skills))
+				: undefined;
+		if (skillsBlock) contextBlocks.push(skillsBlock);
 		const agentTools = splitTools(agent.tools);
 		const runtime = this.runtimeFor(req.scope?.workspace.path, req.runtimeEvents);
 		const toolContext = {
@@ -315,12 +343,18 @@ export class PiAgent implements Agent {
 			actor,
 			context: toolContext,
 			core: agentTools.core,
+			attachments,
 			custom: [
 				...agentTools.custom,
 				...memoryTools(this.input.memory, req.scope?.memory, {
 					actor,
 					approvers: this.input.approvalApprovers ?? [],
 				}),
+				...skillTools(this.input.skills, req.scope?.skills, {
+					actor,
+					approvers: this.input.approvalApprovers ?? [],
+				}),
+				...secretTools(this.input.secrets, req.scope?.workspace),
 			],
 			logger: log,
 		});
@@ -363,69 +397,6 @@ export class PiAgent implements Agent {
 
 function sessionPath(root: string, path: string): string {
 	return isAbsolute(path) ? path : resolve(root, path);
-}
-
-function memoryTools(
-	memory: MemoryStore | undefined,
-	scope: ScopedKey | undefined,
-	policy: { actor: string; approvers: string[] },
-): ToolDefinition[] {
-	if (!memory?.enabled() || !scope) return [];
-	const assertCanWrite = () => {
-		if (memory.writePolicy() === "off") throw new Error("memory writes are disabled");
-		if (memory.writePolicy() === "approvers" && !policy.approvers.includes(policy.actor)) {
-			throw new Error("memory writes require an approver");
-		}
-	};
-	return [
-		{
-			name: "memory_read",
-			label: "Memory Read",
-			description: "Read persistent memory for this chat workspace.",
-			parameters: Type.Object({}),
-			execute: async () => toolText((await memory.read(scope)).trim() || "no memory", "memory_read"),
-		},
-		{
-			name: "memory_write",
-			label: "Memory Write",
-			description: "Append one concise persistent memory item for this chat workspace.",
-			parameters: Type.Object({ content: Type.String({ minLength: 1 }) }),
-			execute: async (id, params) => {
-				void id;
-				assertCanWrite();
-				const item = await memory.append(scope, stringParam(params, "content"));
-				return toolText(`saved memory: ${item}`, "memory_write");
-			},
-		},
-		{
-			name: "memory_replace",
-			label: "Memory Replace",
-			description: "Replace exact text in persistent memory for this chat workspace.",
-			parameters: Type.Object({ oldText: Type.String({ minLength: 1 }), newText: Type.String({ minLength: 1 }) }),
-			execute: async (id, params) => {
-				void id;
-				assertCanWrite();
-				await memory.replace(scope, stringParam(params, "oldText"), stringParam(params, "newText"));
-				return toolText("memory updated", "memory_replace");
-			},
-		},
-		{
-			name: "memory_delete",
-			label: "Memory Delete",
-			description: "Delete exact text from persistent memory for this chat workspace.",
-			parameters: Type.Object({ text: Type.String({ minLength: 1 }) }),
-			execute: async (id, params) => {
-				void id;
-				assertCanWrite();
-				await memory.delete(scope, stringParam(params, "text"));
-				return toolText("memory deleted", "memory_delete");
-			},
-		},
-	];
-}
-
-function toolText(text: string, tool: string) {
-	return { content: [{ type: "text" as const, text }], details: { tool } };
 }
 
 function appendToolResult(session: SessionManager, input: ToolContinuation): void {
@@ -516,6 +487,11 @@ export function runtimeSystemPrompt(activeTools: string[]): string {
 		guidance.push("Use shell tools for shell commands and file exploration tasks.");
 	} else if (fileTools.length > 0) {
 		guidance.push("Use dedicated file/search tools for file exploration.");
+	}
+	if (tools.has("attach")) {
+		guidance.push(
+			"When you create a file the user should receive, call the attach tool before your final reply. Do not attach temporary, private, or intermediate files.",
+		);
 	}
 	return guidance.join("\n\n");
 }

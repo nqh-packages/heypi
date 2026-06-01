@@ -1,0 +1,46 @@
+{
+	"title": "heypi",
+	"description": "Chat agents for your team, with approvals and sandboxed tools.",
+	"source": {
+		"repo": "https://github.com/hunvreus/heypi",
+		"branch": "main",
+		"base": "packages/heypi"
+	},
+	"groups": [
+		{
+			"title": "Start here",
+			"pages": [
+				{ "title": "Overview", "slug": "", "file": "../README.md" },
+				{ "title": "Chat", "slug": "chat", "file": "CHAT.md" },
+				{ "title": "CLI", "slug": "cli", "file": "CLI.md" },
+				{ "title": "Admin", "slug": "admin", "file": "ADMIN.md" }
+			]
+		},
+		{
+			"title": "Adapters",
+			"pages": [
+				{ "title": "Slack", "slug": "slack", "file": "SLACK.md" },
+				{ "title": "Telegram", "slug": "telegram", "file": "TELEGRAM.md" },
+				{ "title": "Discord", "slug": "discord", "file": "DISCORD.md" },
+				{ "title": "Webhook", "slug": "webhook", "file": "WEBHOOK.md" }
+			]
+		},
+		{
+			"title": "Runtime",
+			"pages": [
+				{ "title": "Scope", "slug": "scope", "file": "SCOPE.md" },
+				{ "title": "Memory", "slug": "memory", "file": "MEMORY.md" },
+				{ "title": "Scoped Skills", "slug": "skills", "file": "SKILLS.md" },
+				{ "title": "Secrets", "slug": "secrets", "file": "SECRETS.md" },
+				{ "title": "Scheduling", "slug": "scheduling", "file": "SCHEDULING.md" }
+			]
+		},
+		{
+			"title": "Reference",
+			"pages": [
+				{ "title": "Extending", "slug": "extending", "file": "EXTENDING.md" },
+				{ "title": "Architecture", "slug": "architecture", "file": "ARCHITECTURE.md" }
+			]
+		}
+	]
+}

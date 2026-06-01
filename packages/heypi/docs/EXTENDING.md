@@ -1,6 +1,6 @@
 # Extending
 
-heypi is code-first. The main extension points are core tools, custom tools, confirmation rules, command risk classification, adapters, stores, attachments, and runtime options.
+heypi is code-first. The main extension points are core tools, custom tools, confirmation rules, command risk classification, adapters, stores, attachments, scoped skills, and runtime options.
 
 ## Custom Tools
 
@@ -100,7 +100,7 @@ An empty or omitted `approvers` list means any user in that chat can approve.
 heypi registers Pi-compatible runtime tools:
 
 ```text
-bash, read, write, edit, grep, find, ls, history
+bash, read, write, edit, grep, find, ls, attach, history
 ```
 
 Use `coreTools()` to include and configure them:
@@ -121,7 +121,17 @@ agentFrom("./agent", {
 });
 ```
 
-`coreTools()` defaults to all core tools with `commandConfirm()` on `bash`. `bash: true` enables bash without command confirmation. `false` disables a core tool. `read`, `write`, `edit`, `grep`, `find`, and `ls` run inside the runtime workspace and enforce path containment plus runtime limits. `write` and `edit` do not require approval by default.
+`coreTools()` defaults to all core tools with `commandConfirm()` on `bash`. `bash: true` enables bash without command confirmation. `false` disables a core tool. `read`, `write`, `edit`, `grep`, `find`, and `ls` run inside the runtime workspace and enforce path containment plus runtime limits. `attach` marks a runtime workspace file for upload with the final chat reply. `write`, `edit`, and `attach` do not require approval by default.
+
+When `skills.enabled` is true, heypi also exposes managed scoped-skill tools:
+
+```text
+skill_list, skill_read, skill_write, skill_patch, skill_delete
+```
+
+These are not part of `coreTools()` because they are controlled by top-level `skills` config and write policy. They create single-file scoped skills only; heypi does not expose supporting-file writes or a skill marketplace/sync system.
+
+When `secrets.enabled` is true, heypi exposes `secret_request`. The tool creates an encrypted browser handoff link for one or more fields and stores the returned encrypted blob as scoped runtime files under `.secrets/`.
 
 ## Command Risk
 
@@ -246,6 +256,7 @@ import type { Store } from "@hunvreus/heypi/store";
 - Custom adapters implement the `Adapter` interface. A custom adapter can live in a separate package and be used like any built-in adapter: `createHeypi({ adapters: [teams({...})] })`. The built-in adapters are concrete provider integrations, not subclassable bases.
 - Custom stores implement the `Store` interface. Production shared stores must provide durable `locks`; scheduler-capable stores also need `jobs` and `jobRuns`. Implement `transaction()` when multiple repository updates must commit atomically.
 - Custom attachment stores implement `AttachmentStore` and are configured with `attachments: { store }`. Stores receive the current scope on save/resolve and should reject cross-scope refs.
+- Generated files can be sent back to chat with the built-in `attach` tool. The tool records a file from the current scoped runtime workspace and adapters upload it with the final reply.
 - Attachment processing is configured with `attachments.process`; document conversion is optional and should run through a local converter with byte, time, and output limits. The bundled document converter requires Python 3 and either `uv` or MarkItDown installed in the Python environment.
 - Custom runtime packages implement `RuntimeProvider` and are configured with `runtime.provider`. Providers can add package-specific options and methods for previews, port forwarding, image setup, or remote workspace management without changing heypi core. Add methods to the core `Runtime` interface only when heypi itself must use the capability generically across providers.
 - Managed providers can keep scoped runtimes warm and clean them up from `close()`. Management hooks such as `status`, `stop`, and `restart` take the same `RuntimeScope` object returned by `RuntimeStatus.scope`.

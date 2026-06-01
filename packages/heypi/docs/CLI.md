@@ -4,6 +4,19 @@ The `heypi` CLI is a separate executable shipped with the npm package. It does n
 
 Use it for setup checks, provider diagnostics, database migrations, and scheduled job inspection.
 
+If `@hunvreus/heypi` is installed in your app, run the local binary with your package manager:
+
+```bash
+pnpm exec heypi check
+npm exec heypi -- check
+```
+
+Without a local install, use the package name explicitly:
+
+```bash
+npx @hunvreus/heypi check
+```
+
 Most provider commands load `./.env` when it exists. Pass `--env <path>` to load a different file. You can pass tokens directly with command-specific flags, but env files keep setup checks aligned with the app you are about to run.
 
 Apps must set `state.root`. When they omit `store`, heypi uses the default SQLite database at `<state.root>/heypi.db`. Offline CLI commands that inspect or migrate the database still need `--db`; from the app folder, pass that default path explicitly as `--db ./state/heypi.db`.
@@ -86,6 +99,7 @@ Project dependency:
 ```bash
 pnpm add @hunvreus/heypi
 pnpm exec heypi check
+npm exec heypi -- check
 ```
 
 Without installing globally:

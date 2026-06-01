@@ -12,6 +12,7 @@ The agent loads:
 - `skills/incident-triage/SKILL.md` for the incident workflow.
 - Markdown runbooks from `runbooks/`, searched through the `runbook_search` custom tool.
 - Dynamic host context from `state/hosts.json`, appended to the prompt each turn so the agent can recognize host ids, tags, and aliases before choosing tools.
+- Channel-scoped memory, so the agent can keep small durable notes for each Slack channel.
 - Custom host tools from `tools/host.ts` for SSH key onboarding, host inventory, cached host facts, and remote SSH execution.
 - Core runtime tools through `coreTools({ bash: true })`. Local workspace commands run in the default heypi runtime without command confirmation in this example; remote SSH commands run through `host_exec` with command policy, approval checks, and audit rows.
 
@@ -123,6 +124,8 @@ Host tools:
 - `host_exec`: runs commands over SSH from the heypi Node process. Each call includes a human purpose. Risky commands require approval through `commandConfirm()` and show target/command approval details; blocked commands do not run.
 
 This example uses heypi's default runtime for the local workspace. Core bash/file/search tools operate in the scoped workspace under `./workspace`.
+
+Memory is enabled with the default channel scope. Memory files are stored under `./workspace/memory/scopes/...` and are gitignored. With no `HEYPI_APPROVERS` configured, channel users can update memory automatically. When `HEYPI_APPROVERS` is set, memory writes default to approver-only.
 
 Remote SSH commands run from the heypi Node process through `host_exec`.
 

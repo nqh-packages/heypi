@@ -71,6 +71,7 @@ test("Discord approval view presents pending and rejected states as card data", 
 		fields: [
 			{ name: "Reason", value: "Run bash command." },
 			{ name: "Command", value: "```\ncurl --version\n```" },
+			{ name: "Approval ID", value: "approval-1" },
 			{ name: "Requested by", value: "<@U_REQUESTER>" },
 		],
 	});
@@ -129,7 +130,8 @@ test("approval details are capped to stay within Discord embed field limits", ()
 
 	assert.ok(view.fields.length <= 25);
 	assert.deepEqual(view.fields.at(-2), { name: "Requested by", value: "<@U_REQUESTER>" });
-	assert.deepEqual(view.fields.at(-3), { name: "Additional details", value: "20 omitted." });
+	assert.deepEqual(view.fields.at(-3), { name: "Approval ID", value: "approval-1" });
+	assert.deepEqual(view.fields.at(-4), { name: "Additional details", value: "20 omitted." });
 });
 
 test("Discord progress update waits for an in-flight placeholder send", async () => {

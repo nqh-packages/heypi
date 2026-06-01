@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Logger } from "../src/core/log.js";
-import type { Confirm } from "../src/core/types.js";
+import type { Confirm, ReplyAttachment } from "../src/core/types.js";
 import { hostBash } from "../src/runtime/host-bash.js";
 import { justBash } from "../src/runtime/just-bash.js";
 import { executeProcess } from "../src/runtime/shell.js";
@@ -193,6 +193,38 @@ test("history tool searches current thread messages", async () => {
 	const text = result.content?.[0]?.type === "text" ? result.content[0].text : "";
 	assert.match(text, /staging error was fixed/);
 	assert.doesNotMatch(text, /deploy failed/);
+});
+
+test("attach tool records scoped runtime files for the final reply", async () => {
+	const attachments: ReplyAttachment[] = [];
+	const out = tools({
+		runtime: { name: "just-bash", root: "/tmp/unused" },
+		callRunner: fakeCallRunner(),
+		channel: "c",
+		actor: "u",
+		context: { runtimeScope: "channel/a/slack/T/C" },
+		attachments,
+	});
+	const attach = out.find((tool) => tool.name === "attach");
+	assert.ok(attach);
+
+	const result = await attach.execute(
+		"tool-call-1",
+		{ path: "reports/status.txt", name: "status.txt", mimeType: "text/plain" },
+		undefined,
+		undefined,
+		undefined as never,
+	);
+
+	assert.equal(result.content?.[0]?.type === "text" ? result.content[0].text : "", "attached status.txt");
+	assert.deepEqual(attachments, [
+		{
+			path: "scopes/channel/a/slack/T/C/reports/status.txt",
+			scope: "channel/a/slack/T/C",
+			name: "status.txt",
+			mimeType: "text/plain",
+		},
+	]);
 });
 
 test("confirmed raw Pi tools fail closed without heypi replay runner", async () => {

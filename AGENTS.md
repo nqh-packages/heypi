@@ -48,3 +48,9 @@
 - If scope is partial, document what was intentionally not implemented.
 - Remove stale comments/docs during refactors.
 - Keep technical prose concise and actionable; avoid narrative fluff.
+
+## Changelog
+- Keep the root `CHANGELOG.md` updated using Keep a Changelog format: https://keepachangelog.com/en/1.1.0/
+- Put implemented-but-unreleased changes under `## [Unreleased]`; backlog and incomplete work belong in `TODO.md`.
+- When cutting a release, move `[Unreleased]` entries under a version heading and create a fresh empty `## [Unreleased]`.
+- Do not maintain per-package changelogs unless explicitly requested.

@@ -686,6 +686,7 @@ export function approvalView(input: { approval?: Outbound["approval"]; state: Ap
 			value: detail.format === "code" ? codeValue(detail.value) : truncateEmbedValue(detail.value),
 		});
 	}
+	if (input.approval?.id) fields.push({ name: "Approval ID", value: truncateEmbedValue(input.approval.id) });
 	if (input.approval?.requestedBy) fields.push({ name: "Requested by", value: `<@${input.approval.requestedBy}>` });
 	const resolution = approvalResolutionField(input.state, input.actor);
 	if (resolution) fields.push(resolution);
