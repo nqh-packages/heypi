@@ -23,7 +23,7 @@ This repo contains the core heypi package, optional runtime providers, and runna
 ## Examples
 
 - [`examples/slack-devops`](examples/slack-devops): Slack DevOps assistant with runtime tools, runbooks, memory, secrets, SSH host inventory, and approvals.
-- [`examples/discord-project`](examples/discord-project): Discord project assistant with Gondolin, memory, scoped skills, secret requests, and file attachments.
+- [`examples/discord-gondolin`](examples/discord-gondolin): Discord project assistant with Gondolin, memory, scoped skills, secret requests, and file attachments.
 - [`examples/telegram-workout`](examples/telegram-workout): Telegram fitness coach with saved profile/plan and heartbeat check-ins.
 - [`examples/webhook-github-docker`](examples/webhook-github-docker): GitHub issue automation with webhook input, Docker repo inspection, and trusted GitHub writeback.
 

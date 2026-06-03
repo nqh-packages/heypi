@@ -4,7 +4,7 @@ The Discord adapter lets a heypi agent receive Discord messages, stream replies,
 
 Discord decides what the bot receives before heypi sees a message. Configure the bot invite, gateway intents, server permissions, channel permissions, and DM availability first; then use heypi's `allow` config to filter delivered events.
 
-For a runnable example, see [`examples/discord-project`](https://github.com/hunvreus/heypi/tree/main/examples/discord-project).
+For a runnable example, see [`examples/discord-gondolin`](https://github.com/hunvreus/heypi/tree/main/examples/discord-gondolin).
 
 ## Options
 

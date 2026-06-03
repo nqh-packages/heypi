@@ -74,7 +74,7 @@ Both provider packages implement heypi's runtime API, so core bash, file, and se
 ## Examples
 
 - [`examples/slack-devops`](https://github.com/hunvreus/heypi/tree/main/examples/slack-devops): Slack DevOps assistant with runtime tools, runbooks, memory, secrets, SSH host inventory, and approvals.
-- [`examples/discord-project`](https://github.com/hunvreus/heypi/tree/main/examples/discord-project): Discord assistant with a channel-scoped Gondolin VM, memory, skills, secret requests, and generated-file attachments.
+- [`examples/discord-gondolin`](https://github.com/hunvreus/heypi/tree/main/examples/discord-gondolin): Discord assistant with a channel-scoped Gondolin VM, memory, skills, secret requests, and generated-file attachments.
 - [`examples/telegram-workout`](https://github.com/hunvreus/heypi/tree/main/examples/telegram-workout): Telegram fitness coach with saved profile/plan and heartbeat check-ins.
 - [`examples/webhook-github-docker`](https://github.com/hunvreus/heypi/tree/main/examples/webhook-github-docker): GitHub issue automation with webhook input, Docker repo inspection, and trusted GitHub writeback.
 

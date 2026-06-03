@@ -34,7 +34,7 @@ Read more in the [configuration guide](configuration/index.md).
 Follow the [quickstart](quickstart/index.md) to run a minimal Slack bot, then read [configuration](configuration/index.md) for the main app-level knobs. You can also try one of the examples:
 
 - [`slack-devops`](https://github.com/hunvreus/heypi/tree/main/examples/slack-devops): Slack operations agent with SSH host tools, approvals, memory, secrets, and runbooks.
-- [`discord-project`](https://github.com/hunvreus/heypi/tree/main/examples/discord-project): Discord project assistant with Gondolin runtime, channel scope, skills, secrets, and generated-file attachments.
+- [`discord-gondolin`](https://github.com/hunvreus/heypi/tree/main/examples/discord-gondolin): Discord project assistant with Gondolin runtime, channel scope, skills, secrets, and generated-file attachments.
 - [`telegram-workout`](https://github.com/hunvreus/heypi/tree/main/examples/telegram-workout): Telegram fitness coach with scoped memory and scheduled check-ins.
 - [`webhook-github-docker`](https://github.com/hunvreus/heypi/tree/main/examples/webhook-github-docker): Webhook automation that investigates GitHub issues in Docker and comments back through trusted tools.
 

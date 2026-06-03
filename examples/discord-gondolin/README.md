@@ -22,16 +22,16 @@ This is the full runtime example. It is closer to pi-chat than the Slack and Tel
 - `memory: true` enables durable channel memory.
 - `skills.enabled` enables scoped channel skills. With `HEYPI_APPROVERS` set, skill writes default to approver-only.
 - `secrets` serves a local encrypted handoff page at `http://127.0.0.1:3000/secret`.
-- Admin is enabled at `http://127.0.0.1:3000/admin`; use `pnpm exec heypi admin link --state examples/discord-project/state` if you need a fresh login link.
+- Admin is enabled at `http://127.0.0.1:3000/admin`; use `pnpm exec heypi admin link --state examples/discord-gondolin/state` if you need a fresh login link.
 
 ## Run
 
 ```bash
-cp examples/discord-project/.env.example examples/discord-project/.env
+cp examples/discord-gondolin/.env.example examples/discord-gondolin/.env
 pnpm run dev:discord
 ```
 
-The repo script runs `index.ts` with `examples/discord-project` as the working directory.
+The repo script runs `index.ts` with `examples/discord-gondolin` as the working directory.
 
 Required env vars:
 
@@ -55,19 +55,19 @@ Leave allowlists empty to accept every event Discord delivers. Guild channel mes
 ## Setup Checks
 
 ```bash
-pnpm exec heypi discord check --env examples/discord-project/.env
-pnpm exec heypi discord channels --env examples/discord-project/.env
-pnpm exec heypi discord observe --env examples/discord-project/.env
+pnpm exec heypi discord check --env examples/discord-gondolin/.env
+pnpm exec heypi discord channels --env examples/discord-gondolin/.env
+pnpm exec heypi discord observe --env examples/discord-gondolin/.env
 ```
 
 Use `discord check` to verify the token and get an invite URL. Use `discord channels` or `discord observe` to find IDs for `HEYPI_DISCORD_CHANNELS`, `HEYPI_DISCORD_USERS`, and `HEYPI_APPROVERS`. Use Discord role IDs for `HEYPI_DISCORD_GROUPS` and `HEYPI_APPROVER_GROUPS`.
 
 Smoke test from the repo root:
 
-1. Fill `examples/discord-project/.env` with `DISCORD_BOT_TOKEN` and `OPENAI_API_KEY`.
-2. Run `pnpm exec heypi discord check --env examples/discord-project/.env`.
+1. Fill `examples/discord-gondolin/.env` with `DISCORD_BOT_TOKEN` and `OPENAI_API_KEY`.
+2. Run `pnpm exec heypi discord check --env examples/discord-gondolin/.env`.
 3. Invite the bot to a server with Guilds, Guild Messages, Direct Messages, and Message Content enabled.
-4. Run `pnpm exec heypi discord channels --env examples/discord-project/.env`, then set `HEYPI_DISCORD_CHANNELS` to the channel you want to test.
+4. Run `pnpm exec heypi discord channels --env examples/discord-gondolin/.env`, then set `HEYPI_DISCORD_CHANNELS` to the channel you want to test.
 5. Run `pnpm run dev:discord`.
 6. Mention the bot in Discord, for example: `@heypi help`.
 
