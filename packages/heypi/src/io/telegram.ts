@@ -64,6 +64,13 @@ export function telegram(input: TelegramConfig): Adapter {
 			delivery = new DeliveryQueue(input.delivery, start.logger);
 			stopped = false;
 			start.logger.info("adapter.start", { adapter: name, kind });
+			if (!telegramAllowConfigured(input.allow)) {
+				start.logger.warn("security.adapter_allow_missing", {
+					adapter: name,
+					kind,
+					reason: "without allow, delivered DMs and mentioned group messages can trigger the agent",
+				});
+			}
 			if (input.apiUrl) start.logger.warn("telegram.api_url_override", { adapter: name, kind });
 			loop = poll({ client, start, config: input, delivery, provider: name, kind, stopped: () => stopped });
 		},
@@ -111,6 +118,10 @@ function telegramTargetChat(target: AdapterTarget): number {
 	const parsed = Number(raw);
 	if (!Number.isFinite(parsed)) throw new Error(`Invalid Telegram channel: ${raw}`);
 	return parsed;
+}
+
+function telegramAllowConfigured(allow: TelegramAllow | undefined): boolean {
+	return Boolean(allow?.chats?.length || allow?.users?.length || allow?.dms === false);
 }
 
 function numberOrUndefined(input?: string): number | undefined {

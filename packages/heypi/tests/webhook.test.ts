@@ -217,6 +217,59 @@ test("webhook rejects replyUrl hosts outside the allowlist", async () => {
 	}
 });
 
+test("webhook times out slow replyUrl callbacks", async () => {
+	const port = await freePort();
+	const callbackPort = await freePort();
+	const secret = "test-secret";
+	const callback = createServer((_req, res) => {
+		setTimeout(() => {
+			res.writeHead(204);
+			res.end();
+		}, 300);
+	});
+	await new Promise<void>((resolve) => callback.listen(callbackPort, "127.0.0.1", resolve));
+	const adapter = webhook({ secret, port, replyHosts: ["127.0.0.1"], replyTimeoutMs: 20 });
+	await adapter.start({
+		handler: async () => ({ text: "ok" }),
+		logger: consoleLogger({ level: "error", format: "pretty" }),
+	});
+	try {
+		const started = Date.now();
+		const response = await post(port, "/webhook/webhook/messages", secret, {
+			text: "hello",
+			sync: true,
+			replyUrl: `http://127.0.0.1:${callbackPort}/callback`,
+		});
+		assert.equal(response.status, 200);
+		assert.equal(response.body.status, "done");
+		assert.ok(Date.now() - started < 250);
+	} finally {
+		await adapter.stop?.();
+		callback.closeAllConnections();
+		await new Promise<void>((resolve, reject) => callback.close((error) => (error ? reject(error) : resolve())));
+	}
+});
+
+test("webhook rejects user-supplied generated thread id prefixes", async () => {
+	const port = await freePort();
+	const secret = "test-secret";
+	const adapter = webhook({ secret, port });
+	await adapter.start({
+		handler: async () => ({ text: "ok" }),
+		logger: consoleLogger({ level: "error", format: "pretty" }),
+	});
+	try {
+		const response = await post(port, "/webhook/webhook/messages", secret, {
+			threadId: "whth_user_supplied",
+			text: "hello",
+		});
+		assert.equal(response.status, 400);
+		assert.equal(response.body.error, "threadId uses a reserved prefix");
+	} finally {
+		await adapter.stop?.();
+	}
+});
+
 test("webhook caps in-flight async runs", async () => {
 	const port = await freePort();
 	const secret = "test-secret";

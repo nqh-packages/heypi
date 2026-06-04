@@ -84,6 +84,13 @@ export function slack(input: SlackConfig): Adapter {
 			activeLogger = log;
 			delivery = new DeliveryQueue(input.delivery, log);
 			log.info("adapter.start", { adapter: name, kind, mode: setup.mode });
+			if (!slackAllowConfigured(input.allow)) {
+				log.warn("security.adapter_allow_missing", {
+					adapter: name,
+					kind,
+					reason: "without allow, delivered DMs and mentioned channel messages can trigger the agent",
+				});
+			}
 			const receiver = setup.mode === "http" ? createSlackReceiver(input, setup, start) : undefined;
 			const bolt = createSlackApp(input, setup, receiver);
 			const groups = new SlackGroupResolver(
@@ -850,6 +857,10 @@ async function slackBotUserId(client: SlackClient, logger: Logger): Promise<stri
 
 function slackDm(msg: { channel?: string; channel_type?: string }): boolean {
 	return msg.channel_type === "im" || msg.channel?.startsWith("D") === true;
+}
+
+function slackAllowConfigured(allow: SlackAllow | undefined): boolean {
+	return Boolean(allow?.channels?.length || allow?.users?.length || allow?.groups?.length || allow?.dms === false);
 }
 
 export function slackAllowed(

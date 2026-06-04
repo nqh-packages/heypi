@@ -31,7 +31,7 @@ import { Queue } from "./runtime/queue.js";
 import { normalizeStateRoot } from "./state.js";
 import { sqliteStore } from "./store/sqlite.js";
 import type { Store } from "./store/types.js";
-import { toolRunner } from "./tool-internal.js";
+import { toolConfirm, toolRunner } from "./tool-internal.js";
 
 export type HeypiApp = {
 	start(): Promise<void>;
@@ -92,6 +92,15 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 	});
 	const agentTools = splitTools(config.agent.tools);
 	const bashConfirm = agentTools.core.find((tool) => tool.name === "bash")?.confirm;
+	warnSecurityPosture({
+		logger: log,
+		agent: config.agent.id,
+		runtime: appRuntime.name,
+		http: httpConfig,
+		approval: config.approval,
+		bashEnabled: agentTools.core.some((tool) => tool.name === "bash"),
+		confirmedCustomTools: agentTools.custom.filter((tool) => toolConfirm(tool)).map((tool) => tool.name),
+	});
 	const callRunner = new CallRunner(
 		store.calls,
 		store.approvals,
@@ -367,6 +376,45 @@ function normalizeHttpConfig(config: HttpConfig | undefined): Required<HttpConfi
 		host: config?.host ?? DEFAULT_HTTP.host,
 		port: config?.port ?? DEFAULT_HTTP.port,
 	};
+}
+
+function warnSecurityPosture(input: {
+	logger: Logger;
+	agent: string;
+	runtime: string;
+	http: Required<HttpConfig>;
+	approval: HeypiConfig["approval"];
+	bashEnabled: boolean;
+	confirmedCustomTools: string[];
+}): void {
+	if (input.runtime === "host-bash" || input.runtime === "guarded-bash") {
+		input.logger.warn("security.runtime_host", {
+			agent: input.agent,
+			runtime: input.runtime,
+			reason: "host runtimes execute as the heypi process user; use only for trusted local or admin apps",
+		});
+	}
+	if (!loopbackHost(input.http.host)) {
+		input.logger.warn("security.http_public", {
+			agent: input.agent,
+			host: input.http.host,
+			port: input.http.port,
+			reason: "non-loopback HTTP listeners should be behind TLS, authentication, and rate limits",
+		});
+	}
+	if (!hasActorPolicy(input.approval?.approvers) && (input.bashEnabled || input.confirmedCustomTools.length > 0)) {
+		input.logger.warn("security.approvers_missing", {
+			agent: input.agent,
+			bash: input.bashEnabled,
+			tools: input.confirmedCustomTools.join(","),
+			reason: "without approval.approvers, approval visibility controls who can approve risky calls",
+		});
+	}
+}
+
+function loopbackHost(host: string): boolean {
+	const normalized = host.toLowerCase().replace(/^\[/u, "").replace(/\]$/u, "");
+	return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
 }
 
 type AppLockState = {

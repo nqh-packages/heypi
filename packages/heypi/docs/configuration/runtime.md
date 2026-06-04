@@ -32,8 +32,8 @@ createHeypi({
 ## Runtime types
 
 - `just-bash`: default runtime. Runs a TypeScript bash interpreter with a virtual filesystem. JavaScript and Python execution can be enabled through just-bash config. Network access is disabled by default.
-- `host-bash`: runs bash on the host filesystem. Use only for trusted local apps.
-- `guarded-bash`: host bash with heypi command classification. Use when you want command categories and logs, but only for trusted local apps.
+- `host-bash`: runs bash on the host filesystem as the heypi process user. Use only for trusted local or administrative apps.
+- `guarded-bash`: host bash with heypi command classification. The policy is governance, not isolation; use only for trusted local or administrative apps.
 - Docker provider: one warm Docker container per runtime scope. Install [`@hunvreus/heypi-runtime-docker`](https://www.npmjs.com/package/@hunvreus/heypi-runtime-docker).
 - Gondolin provider: one warm Gondolin VM per runtime scope. Install [`@hunvreus/heypi-runtime-gondolin`](https://www.npmjs.com/package/@hunvreus/heypi-runtime-gondolin).
 
@@ -54,6 +54,8 @@ Runtime providers receive a `RuntimeScope`, including a scoped filesystem path. 
 - Gondolin: VM egress is open by default.
 
 Configure only the network access the agent needs.
+
+heypi logs a startup warning for `host-bash` and `guarded-bash`. For shared or team-facing bots, prefer `just-bash`, Docker, or Gondolin.
 
 ## Custom providers
 

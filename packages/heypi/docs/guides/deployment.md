@@ -1,8 +1,20 @@
 # Deployment
 
-Deploy heypi as one long-running Node.js service. Use a VPS, VM, container, or single-instance app host with persistent storage.
+Deploy heypi as one long-running Node.js service with persistent storage. Use a VPS, VM, container host, or single-instance app platform where the process can keep adapters, schedulers, runtime providers, and delivery queues alive.
 
 This guide assumes you already have a heypi app entrypoint, prompt files, and package scripts. For app creation, start with the [Quickstart](../quickstart/index.md).
+
+## Deployment model
+
+Run one heypi process per app/agent store. The process owns:
+
+- chat adapters such as Slack Socket Mode, Discord gateway, Telegram polling, or HTTP webhooks,
+- scheduled jobs and heartbeat checks,
+- the app lock and thread locks,
+- runtime workspaces and managed runtime providers,
+- local delivery queues and provider rate-limit retries.
+
+Use the app lock as a guardrail, not as a scaling mechanism. Multi-process deployments need a custom shared store, distributed delivery limiting, and operational review before they are safe.
 
 ## Requirements
 
@@ -13,7 +25,7 @@ This guide assumes you already have a heypi app entrypoint, prompt files, and pa
 - Optional: Docker if the app uses `@hunvreus/heypi-runtime-docker`.
 - Optional: Node.js 23.6 or newer plus QEMU if the app uses `@hunvreus/heypi-runtime-gondolin`.
 
-Keep `state` and `workspace` outside ephemeral deploy directories. `state` contains durable app state; `workspace` contains scoped runtime files, generated attachments, and runtime-scoped secrets.
+Keep `state` and `workspace` outside release directories so upgrades do not delete durable data. `state` contains the SQLite database and admin state. `workspace` contains Pi session files, scoped runtime files, generated attachments, memory, skills, and runtime-scoped secrets.
 
 ## Prepare the server
 
@@ -35,6 +47,12 @@ npm ci
 ```
 
 If you deploy TypeScript directly, include a runner such as `tsx` in your app dependencies. If you compile first, run the compiled JavaScript in production.
+
+Create durable directories before first start:
+
+```bash
+mkdir -p state workspace
+```
 
 ## Configure environment
 
@@ -97,6 +115,8 @@ sudo journalctl -u heypi -f
 
 If Node is installed through a version manager, replace `/usr/bin/npm` with the absolute path available to the `heypi` user.
 
+Use `Restart=always` or equivalent supervision. The app records interrupted turns during startup recovery, but a supervisor is still responsible for bringing the process back.
+
 ## Run with Docker
 
 Use Docker when you want a repeatable process environment. Mount state and workspace directories as volumes.
@@ -125,6 +145,19 @@ docker run -d \
 
 If the app itself uses the Docker runtime provider, mount the Docker socket or use a remote Docker daemon intentionally. That gives the heypi process control over containers.
 
+## Runtime providers
+
+Choose the runtime provider based on what the agent is allowed to touch:
+
+- `just-bash`: default production runtime for scoped command/file tools.
+- Docker runtime provider: use when command execution should run in containers.
+- Gondolin runtime provider: use when command execution should run in managed microVMs.
+- `host-bash` or `guarded-bash`: use only for trusted development or administrative agents.
+
+Managed runtime providers keep scoped runtimes warm until idle timeout or shutdown. Plan CPU, memory, disk, and cleanup around the number of active scopes.
+
+Keep state and runtime workspace directories private to the heypi OS user on shared hosts. State contains transcripts, calls, approvals, jobs, and admin metadata. Runtime workspaces can contain generated files, attachments, and runtime-scoped secrets. A typical service setup should create these directories with `0700` permissions before starting heypi.
+
 ## Expose HTTP routes
 
 If you use Slack HTTP mode, webhooks, secrets, or the admin UI, configure the heypi HTTP listener and put it behind HTTPS.
@@ -141,6 +174,8 @@ Generate an admin login link from the server:
 ```bash
 npm exec heypi -- admin link --state ./state --url https://agent.example.com
 ```
+
+Do not expose the admin route broadly. Prefer private networking, VPN, IP allowlists, or an authenticated reverse proxy in addition to heypi admin auth.
 
 ## Process ownership
 
@@ -163,6 +198,12 @@ createHeypi({
 
 Set `appLock: false` only when an external supervisor guarantees single ownership. Custom stores used with app locking must implement `locks`.
 
+## Backups
+
+Back up `state/` before upgrades and on a regular schedule. Back up `workspace/` if you need to preserve Pi sessions, memory, skills, generated files, attachments, or runtime-scoped secrets.
+
+For SQLite, stop the service or use a SQLite-safe backup method before copying `state/heypi.db`.
+
 ## Logging
 
 heypi logs structured events through `logger`. The default is pretty console output at `info` level. Use JSON in production when logs are collected by journald, Docker, or a log pipeline:
@@ -178,6 +219,13 @@ createHeypi({
 
 Custom loggers implement `debug`, `info`, `warn`, and `error`. heypi redacts common provider tokens and credentials before writing through the built-in console logger.
 
+Monitor for:
+
+- `app.locked`, `app.lock_refresh_lost`, and startup recovery warnings,
+- adapter delivery failures and provider rate-limit retries,
+- failed turns, failed tool calls, and pending approvals,
+- runtime provider capacity, idle cleanup, and disk usage.
+
 ## Upgrade
 
 Stop the service, update packages, run the check, then restart:
@@ -189,7 +237,7 @@ npm exec heypi -- check --env .env --db ./state/heypi.db --runtime-root ./worksp
 sudo systemctl start heypi
 ```
 
-Back up the `state` directory before upgrades. Keep the `workspace` directory if you want scoped runtime files to survive deploys.
+Keep `state/` and `workspace/` mounted across releases. If a migration fails, restore the backup, fix the deployment, and rerun `heypi check` before starting the service.
 
 ## Shutdown
 

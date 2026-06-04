@@ -19,11 +19,12 @@ For a runnable advanced example, see [`examples/webhook-github-docker`](https://
 | `host` | No | Host constraint for registered routes, or standalone bind host. |
 | `port` | No | Port for standalone mode, or route constraint for shared HTTP. Required for standalone mode. |
 | `syncTimeoutMs` | No | Maximum wait time for `sync: true` requests. |
+| `replyTimeoutMs` | No | Maximum wait time when posting an async `replyUrl` callback. Defaults to `10_000`. |
 | `maxBodyBytes` | No | Maximum request body size. Defaults to `1_000_000`. |
 | `maxInFlight` | No | Maximum concurrent webhook runs. Defaults to `32`. |
 | `replyHosts` | No | Allowed callback hosts for async `replyUrl` delivery. Required when using `replyUrl`. |
 
-Webhook callers provide the actor with the request `user` field. They can also provide `threadId` and `data` depending on the route and integration.
+Webhook callers provide the actor with the request `user` field. They can also provide `threadId` and `data` depending on the route and integration. Body-supplied `threadId` values must not start with `whth_`; that prefix is reserved for server-generated webhook threads.
 
 ## Setup
 
@@ -87,7 +88,7 @@ GET  /webhook/{name}/threads/:threadId/runs/:runId
 
 The base route `POST /webhook/{name}` is an alias for `/messages`.
 
-Message requests are async-first and return `202` while the turn runs. Pass `sync: true` for short requests, or `replyUrl` for a callback. Callback hosts must be listed in `replyHosts`.
+Message requests are async-first and return `202` while the turn runs. Pass `sync: true` for short requests, or `replyUrl` for a callback. Callback hosts must be listed in `replyHosts`, and callback delivery is bounded by `replyTimeoutMs`.
 
 Start a thread:
 

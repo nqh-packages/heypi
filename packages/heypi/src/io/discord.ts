@@ -86,6 +86,13 @@ export function discord(input: DiscordConfig): Adapter {
 				start.logger,
 			);
 			start.logger.info("adapter.start", { adapter: name, kind });
+			if (!discordAllowConfigured(input.allow)) {
+				start.logger.warn("security.adapter_allow_missing", {
+					adapter: name,
+					kind,
+					reason: "without allow, delivered DMs and mentioned channel messages can trigger the agent",
+				});
+			}
 			client.on(Events.MessageCreate, (msg) => {
 				void handleMessage({ client, start, config: input, delivery, provider: name, kind, groups, msg });
 			});
@@ -798,6 +805,10 @@ function discordThreadName(channel: TextBasedChannel): string | undefined {
 
 function isDm(msg: Message): boolean {
 	return msg.channel.type === ChannelType.DM;
+}
+
+function discordAllowConfigured(allow: DiscordAllow | undefined): boolean {
+	return Boolean(allow?.channels?.length || allow?.users?.length || allow?.groups?.length || allow?.dms === false);
 }
 
 function discordThread(msg: Message): boolean {

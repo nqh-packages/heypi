@@ -1,6 +1,6 @@
 {
 	"name": "@hunvreus/heypi-runtime-docker",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"description": "Docker runtime provider for heypi.",
 	"license": "MIT",
 	"type": "module",
@@ -39,7 +39,7 @@
 		"prepack": "pnpm run build"
 	},
 	"peerDependencies": {
-		"@hunvreus/heypi": "0.1.1"
+		"@hunvreus/heypi": "0.1.2"
 	},
 	"devDependencies": {
 		"@hunvreus/heypi": "workspace:*",

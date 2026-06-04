@@ -12,6 +12,7 @@ export type WebhookConfig = {
 	path?: string;
 	unsafePathOverride?: boolean;
 	syncTimeoutMs?: number;
+	replyTimeoutMs?: number;
 	maxBodyBytes?: number;
 	maxInFlight?: number;
 	replyHosts?: string[];
@@ -39,6 +40,7 @@ export function webhook(config: WebhookConfig): Adapter {
 	const base = normalizePath(config.path ?? `/webhook/${name}`);
 	const maxBodyBytes = config.maxBodyBytes ?? 1_000_000;
 	const maxInFlight = config.maxInFlight ?? 32;
+	const replyTimeoutMs = config.replyTimeoutMs ?? 10_000;
 	let server: Server | undefined;
 	let start: AdapterStart | undefined;
 	let inFlight = 0;
@@ -59,6 +61,7 @@ export function webhook(config: WebhookConfig): Adapter {
 					start: input,
 					maxBodyBytes,
 					maxInFlight,
+					replyTimeoutMs,
 					inFlight: () => inFlight++,
 				});
 			if (input.http) {
@@ -141,6 +144,7 @@ type RouteInput = {
 	start: AdapterStart;
 	maxBodyBytes: number;
 	maxInFlight: number;
+	replyTimeoutMs: number;
 	inFlight(): number;
 };
 
@@ -151,12 +155,12 @@ async function routeRequest(input: RouteInput & { release(): void }): Promise<vo
 		const url = new URL(input.req.url ?? "/", "http://localhost");
 		const path = normalizePath(url.pathname);
 		if (input.req.method === "POST" && (path === input.base || path === `${input.base}/messages`)) {
-			return await receive(input, await body(input.req, input.maxBodyBytes));
+			return await receive(input, await body(input.req, input.maxBodyBytes), false);
 		}
 		const threadMatch = path.match(new RegExp(`^${escapeRe(input.base)}/threads/([^/]+)/messages$`));
 		if (input.req.method === "POST" && threadMatch) {
 			const payload = await body(input.req, input.maxBodyBytes);
-			return await receive(input, { ...payload, threadId: decodeURIComponent(threadMatch[1]) });
+			return await receive(input, { ...payload, threadId: decodeURIComponent(threadMatch[1]) }, true);
 		}
 		const runMatch = path.match(new RegExp(`^${escapeRe(input.base)}/threads/([^/]+)/runs/([^/]+)$`));
 		if (input.req.method === "GET" && runMatch) {
@@ -182,19 +186,25 @@ async function receive(
 		start: AdapterStart;
 		config: WebhookConfig;
 		maxInFlight: number;
+		replyTimeoutMs: number;
 		inFlight(): number;
 		release(): void;
 	},
 	payload: WebhookMessage,
+	threadFromRoute: boolean,
 ): Promise<void> {
 	const text = payload.text?.trim();
 	if (!text) return json(input.res, 400, { ok: false, error: "text is required" });
 	if (payload.replyUrl) assertReplyUrl(payload.replyUrl, input.config.replyHosts);
+	const suppliedThreadId = payload.threadId?.trim();
+	if (!threadFromRoute && suppliedThreadId?.startsWith("whth_")) {
+		return json(input.res, 400, { ok: false, error: "threadId uses a reserved prefix" });
+	}
 	if (input.inFlight() >= input.maxInFlight) {
 		input.release();
 		return json(input.res, 429, { ok: false, error: "too many in-flight webhook runs" });
 	}
-	const threadId = payload.threadId?.trim() || `whth_${randomBytes(18).toString("base64url")}`;
+	const threadId = suppliedThreadId || `whth_${randomBytes(18).toString("base64url")}`;
 	const runId = randomUUID();
 	const done = execute(input, payload, threadId, runId).finally(input.release);
 	if (payload.sync) {
@@ -206,7 +216,7 @@ async function receive(
 }
 
 async function execute(
-	input: { name: string; kind: string; start: AdapterStart },
+	input: { name: string; kind: string; start: AdapterStart; replyTimeoutMs: number },
 	payload: WebhookMessage,
 	threadId: string,
 	runId: string,
@@ -224,24 +234,34 @@ async function execute(
 			trace: runId,
 		});
 		const response = outboundResponse(threadId, runId, result);
-		if (payload.replyUrl) await postReply(input.start, payload.replyUrl, response);
+		if (payload.replyUrl) await postReply(input.start, payload.replyUrl, response, input.replyTimeoutMs);
 		return response;
 	} catch (error) {
 		const response = { ok: false, threadId, runId, status: "failed", error: message(error) };
-		if (payload.replyUrl) await postReply(input.start, payload.replyUrl, response);
+		if (payload.replyUrl) await postReply(input.start, payload.replyUrl, response, input.replyTimeoutMs);
 		return response;
 	}
 }
 
-async function postReply(start: AdapterStart, url: string, body: Record<string, unknown>): Promise<void> {
+async function postReply(
+	start: AdapterStart,
+	url: string,
+	body: Record<string, unknown>,
+	timeoutMs: number,
+): Promise<void> {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), timeoutMs);
 	try {
 		await fetch(url, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify(body),
+			signal: controller.signal,
 		});
 	} catch (error) {
 		start.logger.warn("webhook.reply_failed", { error: message(error) });
+	} finally {
+		clearTimeout(timeout);
 	}
 }
 

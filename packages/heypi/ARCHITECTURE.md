@@ -191,6 +191,7 @@ provider event
 - file tools are scoped and size-limited
 - `just-bash` is the safe default runtime
 - `guarded-bash` and `host-bash` execute on the host and are unsafe/dev/admin modes
+- startup warnings flag risky shared-bot posture: host runtimes, public HTTP binds, missing approvers for risky tools, and adapters without allow filters
 
 ## Supported Deployments
 

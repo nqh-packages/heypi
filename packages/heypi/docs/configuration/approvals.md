@@ -36,5 +36,7 @@ See [Agent tools: Confirmation](tools.md#confirmation) for the `confirm` return 
 ## Notes
 
 - Approval decisions are logged with the requester, approver, call, tool, and result.
-- Without `approvers`, approvals are limited by thread visibility, not by a central allowlist.
+- Without `approvers`, approvals are limited by thread visibility, not by a central allowlist. Configure explicit approvers for shared or team-facing bots.
 - Users can deny their own requested approval.
+
+heypi logs a startup warning when bash or confirmed custom tools are enabled without explicit `approval.approvers`.

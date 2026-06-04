@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-06-04
+
+### Changed
+- Added startup security posture warnings for host runtimes, public HTTP binds, missing approvers, and chat adapters without allow filters.
+- Added a timeout for webhook `replyUrl` callbacks and reserved the server-generated `whth_` thread ID prefix.
+- Reworked deployment docs around the supported long-running service model, persistent storage, runtime providers, backups, and operations.
+- Restored Agent configuration docs navigation to a single page instead of a nested submenu.
+- Removed unsupported alternate deployment planning from TODO and architecture notes.
+
 ## [0.1.1] - 2026-06-03
 
 ### Added

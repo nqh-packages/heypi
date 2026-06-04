@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import type { Logger } from "@hunvreus/heypi";
 import {
 	agentFrom,
 	commandConfirm,
@@ -104,6 +105,31 @@ test("createHeypi uses state.root for the default SQLite store", async () => {
 		assert.equal((await stat(join(root, "state", "heypi.db"))).isFile(), true);
 	} finally {
 		process.chdir(cwd);
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("createHeypi warns about risky startup security posture", async () => {
+	const root = await mkdtemp(join(tmpdir(), "heypi-public-api-security-warnings-"));
+	try {
+		const warnings: Record<string, unknown>[] = [];
+		createHeypi({
+			state: { root: join(root, "state") },
+			http: { host: "0.0.0.0", port: 0 },
+			logger: fakeLogger(warnings),
+			adapters: [{ name: "test", kind: "test", start: async () => undefined }],
+			agent: agentFrom("../../examples/slack-devops/agent", { id: "default", model: "openai/gpt-5-mini" }),
+			runtime: {
+				name: "host-bash",
+				root: workspace(join(root, "workspace")),
+			},
+		});
+
+		assert.deepEqual(
+			warnings.map((row) => row.event),
+			["security.runtime_host", "security.http_public", "security.approvers_missing"],
+		);
+	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
 });
@@ -728,4 +754,13 @@ async function freePort(): Promise<number> {
 	await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
 	if (!address || typeof address === "string") throw new Error("missing port");
 	return address.port;
+}
+
+function fakeLogger(warnings: Record<string, unknown>[]): Logger {
+	return {
+		debug: () => undefined,
+		info: () => undefined,
+		warn: (event, input = {}) => warnings.push({ event, ...input }),
+		error: () => undefined,
+	};
 }

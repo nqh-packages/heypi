@@ -36,6 +36,8 @@ status <call-id>
 cancel <turn-id-or-trace>
 ```
 
+For shared workspaces, configure `allow`. Without it, any delivered DM can trigger the agent, and any delivered channel or group message can trigger it by mention or control command. heypi logs a startup warning when a built-in chat adapter starts without an allow filter.
+
 ## Provider differences
 
 | Provider | Main difference |
