@@ -1,4 +1,42 @@
-# Agent rules
+# AGENTS.md
+
+## Scope
+
+This file governs the repository unless a nested `AGENTS.md` is closer to the changed file.
+
+## Project identity
+
+This repo is the heypi workspace: a TypeScript framework for Pi-backed team chat agents, optional runtime providers, a scaffolder, and runnable examples.
+
+## Canonical owners
+
+| Concern | Owner |
+| --- | --- |
+| Public framework API, adapters, approvals, state, scheduler, admin, CLI, docs | `packages/heypi/` |
+| Docker runtime provider | `packages/heypi-runtime-docker/` |
+| Gondolin runtime provider | `packages/heypi-runtime-gondolin/` |
+| App scaffolder and generated app templates | `packages/create-heypi/` |
+| Runnable example apps | `examples/` |
+| Environment schema ownership | `.env.schema` |
+| Release notes | `CHANGELOG.md` |
+
+## Scoped instructions
+
+| Path | Local instructions |
+| --- | --- |
+| `packages/heypi/` | See `packages/heypi/AGENTS.md`. |
+| `packages/create-heypi/` | See `packages/create-heypi/AGENTS.md`. |
+| `packages/heypi-runtime-docker/` | See `packages/heypi-runtime-docker/AGENTS.md`. |
+| `packages/heypi-runtime-gondolin/` | See `packages/heypi-runtime-gondolin/AGENTS.md`. |
+| `examples/` | See `examples/AGENTS.md`. |
+
+## Architecture rules
+
+- Keep adapter/channel behavior aligned across Slack, Discord, Telegram, and webhook when the behavior is shared.
+- Keep route handlers and app entrypoints thin; put validation, permissions, persistence, and side effects in focused modules.
+- Treat generated `dist/`, runtime `state/`, runtime `workspace/`, local databases, and logs as derived output. Do not edit or commit them unless the package build intentionally publishes generated artifacts and the diff is expected.
+- Root `package.json` scripts are the canonical workspace commands. Add new root scripts only for stable app/package entrypoints.
+- Environment variables must be declared in `.env.schema` when code reads them directly. `.env.example` remains documentation for runnable examples.
 
 ## Communication
 - Keep answers concise, technical, and to the point.
@@ -56,3 +94,25 @@
 - Put implemented-but-unreleased changes under `## [Unreleased]`; backlog and incomplete work belong in `TODO.md`.
 - When cutting a release, move `[Unreleased]` entries under a version heading and create a fresh empty `## [Unreleased]`.
 - Do not maintain per-package changelogs unless explicitly requested.
+
+## Testing rules
+
+| Change | Required verification |
+| --- | --- |
+| Any TypeScript/source change | `pnpm run check` and `pnpm run typecheck` |
+| Core package behavior | `pnpm --filter @hunvreus/heypi run test` |
+| Runtime provider behavior | `pnpm --filter "./packages/heypi-runtime-*" run test` or the specific package test |
+| Scaffolder behavior | `pnpm --filter create-heypi run test` |
+| Telegram co-founder example | `pnpm run test:telegram:cofounder` |
+| Full completion gate | `varlock audit`, `pnpm run check`, `pnpm run typecheck`, and `pnpm run test` |
+
+## Current enforcement state
+
+| Gate | State |
+| --- | --- |
+| Biome | `pnpm run check` and `pnpm run fmt` |
+| TypeScript | `pnpm run typecheck` |
+| Tests | `pnpm run test` |
+| Env governance | `varlock audit` against `.env.schema` |
+| Version/env hooks | Git commit hooks enforce root package version and Varlock coverage |
+| Qlty | Not initialized in this repo. Do not claim `qlty check .` coverage until `.qlty/` is deliberately added or a stronger native-enforcement exception is declared. |
