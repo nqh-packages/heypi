@@ -19,6 +19,15 @@ export function requiredEnv(env: Env, name: string): string {
 	return value;
 }
 
+export function trustedWorkspaceRoots(env: Env = process.env): string[] {
+	const rawRoots = env === process.env ? process.env.HEYPI_TRUSTED_WORKSPACE_ROOTS : env.HEYPI_TRUSTED_WORKSPACE_ROOTS;
+	const roots = (rawRoots ?? "")
+		.split(",")
+		.map((value) => value.trim())
+		.filter(Boolean);
+	return roots.length > 0 ? roots : [process.cwd()];
+}
+
 export function createTelegramCofounderConfig(
 	env: Env = process.env,
 	toolOptions: ToolFactoryOptions = {},
@@ -39,7 +48,10 @@ export function createTelegramCofounderConfig(
 		],
 		agent: agentFrom("./agent", {
 			model: env.HEYPI_MODEL ?? DEFAULT_MODEL,
-			tools: [...coreTools(), ...createCofounderTools(toolOptions)],
+			tools: [
+				...coreTools(),
+				...createCofounderTools({ trustedWorkspaceRoots: trustedWorkspaceRoots(env), ...toolOptions }),
+			],
 		}),
 		runtime: { root: workspace("./workspace") },
 	};

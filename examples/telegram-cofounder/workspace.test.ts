@@ -3,7 +3,14 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { CofounderWorkspace, parseMarkdown, renderMarkdown, slug, WorkspaceError } from "./tools/workspace.js";
+import {
+	CofounderWorkspace,
+	parseMarkdown,
+	redactSecrets,
+	renderMarkdown,
+	slug,
+	WorkspaceError,
+} from "./tools/workspace.js";
 
 async function tempWorkspace() {
 	const repoRoot = await mkdtemp(join(tmpdir(), "telegram-cofounder-"));
@@ -62,6 +69,12 @@ test("workspace rejects oversized writes and secret-shaped content", async () =>
 		() => secure.writeDocument({ path: "secret", title: "Secret", body: "API_TOKEN=abc123def456ghi789" }),
 		/secret/i,
 	);
+});
+
+test("secret redaction does not treat absolute workspace paths as bare secrets", () => {
+	const path = "/Volumes/BIWIN/CODES/company-runner";
+	assert.equal(redactSecrets(path), path);
+	assert.equal(redactSecrets("API_TOKEN=abc123def456ghi789"), "[REDACTED_SECRET]");
 });
 
 test("frontmatter parser preserves scalar, boolean, and string array values", () => {

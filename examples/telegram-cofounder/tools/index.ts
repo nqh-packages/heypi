@@ -13,6 +13,7 @@ export type ToolFactoryOptions = {
 	access?: ActorAccess;
 	skills?: SkillSource[];
 	runner?: CodexRunner;
+	trustedWorkspaceRoots?: string[];
 };
 
 export function createCofounderTools(options: ToolFactoryOptions = {}) {
@@ -22,6 +23,7 @@ export function createCofounderTools(options: ToolFactoryOptions = {}) {
 	const runner =
 		options.runner ??
 		new FakeCodexRunner({ started: false, command: "hermes-codex", error: "no runtime runner configured" });
+	const trustedWorkspaceRoots = options.trustedWorkspaceRoots ?? [process.cwd()];
 
 	return [
 		tool({
@@ -202,6 +204,7 @@ export function createCofounderTools(options: ToolFactoryOptions = {}) {
 				const result = await prepareEngineeringHandoff(workspace, catalog, runner, {
 					...input,
 					access: { ...access, confirmed: input.confirmed },
+					trustedWorkspaceRoots,
 				});
 				return result.text;
 			},

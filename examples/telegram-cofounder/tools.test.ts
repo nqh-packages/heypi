@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { createCofounderTools } from "./tools/index.js";
@@ -10,8 +9,10 @@ import { CofounderWorkspace } from "./tools/workspace.js";
 type CofounderTools = ReturnType<typeof createCofounderTools>;
 
 async function setup() {
-	const repoRoot = await mkdtemp(join(tmpdir(), "telegram-cofounder-tools-"));
+	await mkdir(resolve("tmp/verify"), { recursive: true });
+	const repoRoot = await mkdtemp(resolve("tmp/verify/telegram-cofounder-tools-"));
 	const workspace = new CofounderWorkspace({ repoRoot, now: () => new Date("2026-06-06T12:00:00.000Z") });
+	const trustedRoot = join(repoRoot, "trusted-root");
 	const skills = ["agent-browser", "bird", "handoff", "hermes-codex"].map((name) => ({
 		name,
 		root: resolve("examples/telegram-cofounder/fixtures/skills", name),
@@ -21,8 +22,9 @@ async function setup() {
 		access: { trusted: true, localDev: false },
 		skills,
 		runner: new FakeCodexRunner(),
+		trustedWorkspaceRoots: [process.cwd(), trustedRoot],
 	});
-	return { workspace, tools };
+	return { trustedRoot, workspace, tools };
 }
 
 async function run(tools: CofounderTools, name: string, input: Record<string, unknown> = {}) {
@@ -181,8 +183,29 @@ test("engineering route copies selected skills and starts only with trusted conf
 	assert.match(started, /fake-runner-started/);
 });
 
+test("engineering route allows explicit trusted roots and blocks paths outside them", async () => {
+	const { tools, trustedRoot } = await setup();
+	assert.match(
+		await run(tools, "route_engineering", {
+			title: "Work in trusted repo",
+			request: "Inspect the trusted repo",
+			targetCwd: join(trustedRoot, "company-runner"),
+		}),
+		/prepared engineering handoff/,
+	);
+	assert.match(
+		await run(tools, "route_engineering", {
+			title: "Work outside trusted roots",
+			request: "Inspect an untrusted local path",
+			targetCwd: "/Users/huy/.ssh",
+		}),
+		/trusted workspace root/,
+	);
+});
+
 test("mutating tools are default-deny without trusted allowlist or local dev flag", async () => {
-	const repoRoot = await mkdtemp(join(tmpdir(), "telegram-cofounder-deny-"));
+	await mkdir(resolve("tmp/verify"), { recursive: true });
+	const repoRoot = await mkdtemp(resolve("tmp/verify/telegram-cofounder-deny-"));
 	const tools = createCofounderTools({
 		workspace: new CofounderWorkspace({ repoRoot }),
 		access: { trusted: false, localDev: false },

@@ -4,6 +4,7 @@
 		"includes": [
 			"**",
 			"!**/dist",
+			"!tmp",
 			"!packages/heypi/drizzle/meta",
 			"!.heypi",
 			"!examples/*/state",

@@ -12,7 +12,7 @@ const SECRET_PATTERNS = [
 	/\b[A-Za-z0-9_]*SECRET[A-Za-z0-9_]*\s*[:=]\s*\S+/i,
 	/\b[A-Za-z0-9_]*PASSWORD[A-Za-z0-9_]*\s*[:=]\s*\S+/i,
 	/\bsk-[A-Za-z0-9_-]{16,}\b/,
-	/\b[A-Za-z0-9+/]{32,}={0,2}\b/,
+	/\b[A-Za-z0-9+]{32,}={0,2}\b/,
 ];
 
 export type FrontmatterValue = string | boolean | string[] | undefined;

@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { SELECTED_SKILLS } from "./capabilities.js";
 import { type ActorAccess, confirmedMutationAllowed } from "./policy.js";
 import type { CodexRunner } from "./runner.js";
@@ -11,6 +11,7 @@ export type EngineeringHandoffInput = {
 	request: string;
 	targetCwd: string;
 	access: ActorAccess;
+	trustedWorkspaceRoots: string[];
 };
 
 export async function prepareEngineeringHandoff(
@@ -20,8 +21,8 @@ export async function prepareEngineeringHandoff(
 	input: EngineeringHandoffInput,
 ): Promise<{ state: "prepared" | "blocked" | "started"; text: string; manifestPath?: string }> {
 	const target = resolve(input.targetCwd);
-	if (!target.startsWith(process.cwd()))
-		return { state: "blocked", text: "blocked: target cwd must stay inside the trusted repo workspace" };
+	if (!isWithinTrustedRoot(target, input.trustedWorkspaceRoots))
+		return { state: "blocked", text: "blocked: target cwd must stay inside a trusted workspace root" };
 
 	const handoff = await workspace.writeHandoff({
 		title: input.title,
@@ -81,4 +82,12 @@ export async function prepareEngineeringHandoff(
 			manifestPath,
 		};
 	}
+}
+
+function isWithinTrustedRoot(target: string, roots: string[]): boolean {
+	return roots.some((root) => {
+		const trustedRoot = resolve(root);
+		const path = relative(trustedRoot, target);
+		return path === "" || (!path.startsWith("..") && !path.startsWith("/"));
+	});
 }
