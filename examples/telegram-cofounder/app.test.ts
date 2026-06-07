@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
 	createTelegramCofounderConfig,
+	DEFAULT_HOST_RUNTIME,
 	DEFAULT_MODEL,
 	DEV_APP_LOCK_DRAIN_MS,
 	devAppLock,
 	listEnv,
 	requiredEnv,
+	runtimeConfig,
 	telegramBotToken,
 	telegramChats,
 	telegramUsers,
@@ -40,6 +42,25 @@ test("trusted workspace roots parse explicit roots and default to current cwd", 
 		"/work/b",
 	]);
 	assert.deepEqual(trustedWorkspaceRoots({}), [process.cwd()]);
+});
+
+test("runtime config defaults to local workspace and can target a trusted host repo", () => {
+	assert.deepEqual(runtimeConfig({}), { root: `${process.cwd()}/workspace` });
+	assert.deepEqual(runtimeConfig({ HEYPI_RUNTIME_ROOT: "/Volumes/BIWIN/CODES/company-runner" }), {
+		root: "/Volumes/BIWIN/CODES/company-runner",
+		name: DEFAULT_HOST_RUNTIME,
+	});
+	assert.deepEqual(
+		runtimeConfig({
+			HEYPI_RUNTIME_ROOT: "/Volumes/BIWIN/CODES/company-runner",
+			HEYPI_RUNTIME_NAME: "host-bash",
+		}),
+		{ root: "/Volumes/BIWIN/CODES/company-runner", name: "host-bash" },
+	);
+	assert.throws(
+		() => runtimeConfig({ HEYPI_RUNTIME_ROOT: "/Volumes/BIWIN/CODES/company-runner", HEYPI_RUNTIME_NAME: "docker" }),
+		/Invalid HEYPI_RUNTIME_NAME/,
+	);
 });
 
 test("trusted operator access follows Telegram allowlists and local dev flag", () => {

@@ -4,7 +4,9 @@ import type { ActorAccess } from "./tools/policy.js";
 
 export const DEFAULT_MODEL = "openai-codex/gpt-5.4-mini";
 export const DEV_APP_LOCK_DRAIN_MS = 1_000;
+export const DEFAULT_HOST_RUNTIME = "guarded-bash";
 export const STATE_ROOT = "./state";
+export const WORKSPACE_ROOT = "./workspace";
 
 export type Env = Record<string, string | undefined>;
 
@@ -42,6 +44,16 @@ export function devAppLock(env: Env = process.env): HeypiConfig["appLock"] {
 	const localDev = env === process.env ? process.env.HEYPI_LOCAL_DEV_MUTATIONS : env.HEYPI_LOCAL_DEV_MUTATIONS;
 	if (appEnv === "development" || localDev === "true") return { drainMs: DEV_APP_LOCK_DRAIN_MS, replace: true };
 	return undefined;
+}
+
+export function runtimeConfig(env: Env = process.env): HeypiConfig["runtime"] {
+	const rawRoot = env === process.env ? process.env.HEYPI_RUNTIME_ROOT : env.HEYPI_RUNTIME_ROOT;
+	const rawName = env === process.env ? process.env.HEYPI_RUNTIME_NAME : env.HEYPI_RUNTIME_NAME;
+	if (!rawRoot) return { root: workspace(WORKSPACE_ROOT) };
+	const name = rawName || DEFAULT_HOST_RUNTIME;
+	if (name !== "just-bash" && name !== "guarded-bash" && name !== "host-bash")
+		throw new Error(`Invalid HEYPI_RUNTIME_NAME: ${name}`);
+	return { root: workspace(rawRoot), name };
 }
 
 export function trustedWorkspaceRoots(env: Env = process.env): string[] {
@@ -89,7 +101,7 @@ export function createTelegramCofounderConfig(
 				}),
 			],
 		}),
-		runtime: { root: workspace("./workspace") },
+		runtime: runtimeConfig(env),
 		appLock: devAppLock(env),
 	};
 }

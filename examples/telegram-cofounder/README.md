@@ -24,11 +24,21 @@ HEYPI_MODEL=openai-codex/gpt-5.4-mini
 HEYPI_TELEGRAM_CHATS=
 HEYPI_TELEGRAM_USERS=
 HEYPI_LOCAL_DEV_MUTATIONS=false
+HEYPI_TRUSTED_WORKSPACE_ROOTS=
+HEYPI_RUNTIME_ROOT=
+HEYPI_RUNTIME_NAME=guarded-bash
 ```
 
 The default model is `openai-codex/gpt-5.4-mini`. Pi resolves model auth through its configured provider/subscription path, so this example does not require `OPENAI_API_KEY` in the default setup path. Override with `HEYPI_MODEL=provider/name`.
 
 Mutating tools and handoffs are default-deny unless a trusted Telegram user allowlist is configured or `HEYPI_LOCAL_DEV_MUTATIONS=true` is set for local development.
+
+For local development against a real repo, set `HEYPI_RUNTIME_ROOT` to that repo and keep `HEYPI_RUNTIME_NAME=guarded-bash`:
+
+```bash
+HEYPI_RUNTIME_ROOT=/Volumes/BIWIN/CODES/company-runner
+HEYPI_TRUSTED_WORKSPACE_ROOTS=/Volumes/BIWIN/CODES
+```
 
 ## Selected features
 
