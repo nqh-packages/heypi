@@ -1,6 +1,7 @@
 {
 	"name": "heypi-workspace",
 	"private": true,
+	"version": "0.1.3",
 	"type": "module",
 	"scripts": {
 		"build": "pnpm --filter @hunvreus/heypi run build",
@@ -17,16 +18,19 @@
 		"dev:slack": "cd examples/slack-devops && tsx watch --conditions development index.ts",
 		"dev:discord": "cd examples/discord-gondolin && tsx watch --conditions development index.ts",
 		"dev:telegram": "cd examples/telegram-workout && tsx watch --conditions development index.ts",
+		"dev:telegram:cofounder": "cd examples/telegram-cofounder && tsx watch --conditions development index.ts",
 		"dev:webhook": "cd examples/webhook-github-docker && tsx watch --conditions development index.ts",
 		"start:slack": "cd examples/slack-devops && tsx --conditions development index.ts",
 		"start:discord": "cd examples/discord-gondolin && tsx --conditions development index.ts",
 		"start:telegram": "cd examples/telegram-workout && tsx --conditions development index.ts",
+		"start:telegram:cofounder": "cd examples/telegram-cofounder && tsx --conditions development index.ts",
 		"start:webhook": "cd examples/webhook-github-docker && tsx --conditions development index.ts",
 		"check": "biome check .",
 		"fmt": "biome format --write .",
 		"typecheck": "pnpm --filter @hunvreus/heypi run typecheck && tsc --noEmit -p tsconfig.json && pnpm --filter \"./packages/heypi-runtime-*\" run check && pnpm --filter create-heypi run check",
 		"db:generate": "pnpm --filter @hunvreus/heypi run db:generate",
-		"test": "pnpm --filter @hunvreus/heypi run test && pnpm --filter \"./packages/heypi-runtime-*\" run test && pnpm --filter create-heypi run test"
+		"test": "pnpm --filter @hunvreus/heypi run test && pnpm --filter \"./packages/heypi-runtime-*\" run test && pnpm --filter create-heypi run test && pnpm run test:telegram:cofounder",
+		"test:telegram:cofounder": "node --conditions development --import tsx --test examples/telegram-cofounder/**/*.test.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.4.15",

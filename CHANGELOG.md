@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- Added a Telegram co-founder example with Markdown-backed company memory, tasks, reports, selected skill handoffs, prompt guardrails, and deterministic transcript tests.
+
 ## [0.1.3] - 2026-06-04
 
 ### Added

@@ -1,7 +1,7 @@
 ---
 title: "feat: Add Telegram co-founder example"
 type: feat
-status: active
+status: completed
 date: 2026-06-06
 origin: docs/brainstorms/2026-06-06-telegram-cofounder-agent-requirements.md
 ---
