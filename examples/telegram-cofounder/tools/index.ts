@@ -182,13 +182,13 @@ export function createCofounderTools(options: ToolFactoryOptions = {}) {
 			name: "route_research",
 			description: "Create a Markdown research task prompt and handoff metadata.",
 			parameters: Type.Object({ request: Type.String() }),
-			execute: async ({ request }) => routeResearch(workspace, request),
+			execute: async ({ request }) => routeResearch(workspace, request, access),
 		}),
 		tool<{ request: string }>({
 			name: "recommend_meta_ads",
 			description: "Create the selected Meta Ads growth recommendation task without Polsia claims.",
 			parameters: Type.Object({ request: Type.String() }),
-			execute: async ({ request }) => routeMetaAds(workspace, request),
+			execute: async ({ request }) => routeMetaAds(workspace, request, access),
 		}),
 		tool<{ title: string; request: string; targetCwd: string; confirmed?: boolean }>({
 			name: "route_engineering",

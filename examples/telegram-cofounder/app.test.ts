@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createTelegramCofounderConfig, DEFAULT_MODEL, listEnv, requiredEnv, trustedWorkspaceRoots } from "./app.js";
+import {
+	createTelegramCofounderConfig,
+	DEFAULT_MODEL,
+	listEnv,
+	requiredEnv,
+	trustedOperatorAccess,
+	trustedWorkspaceRoots,
+} from "./app.js";
 
 test("app uses Pi-managed default model without OPENAI_API_KEY", () => {
 	const config = createTelegramCofounderConfig({ TELEGRAM_BOT_TOKEN: "telegram-token" });
@@ -26,6 +33,19 @@ test("trusted workspace roots parse explicit roots and default to current cwd", 
 		"/work/b",
 	]);
 	assert.deepEqual(trustedWorkspaceRoots({}), [process.cwd()]);
+});
+
+test("trusted operator access follows Telegram allowlists and local dev flag", () => {
+	assert.deepEqual(trustedOperatorAccess({}), { trusted: false, localDev: false });
+	assert.deepEqual(trustedOperatorAccess({ HEYPI_TELEGRAM_USERS: "8285331265" }), {
+		trusted: true,
+		localDev: false,
+	});
+	assert.deepEqual(trustedOperatorAccess({ HEYPI_TELEGRAM_CHATS: "-10042" }), { trusted: true, localDev: false });
+	assert.deepEqual(trustedOperatorAccess({ HEYPI_LOCAL_DEV_MUTATIONS: "true" }), {
+		trusted: false,
+		localDev: true,
+	});
 });
 
 test("app requires Telegram token only at config creation", () => {

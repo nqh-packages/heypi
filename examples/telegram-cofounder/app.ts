@@ -1,5 +1,6 @@
 import { agentFrom, coreTools, createHeypi, type HeypiConfig, telegram, workspace } from "@hunvreus/heypi";
 import { createCofounderTools, type ToolFactoryOptions } from "./tools/index.js";
+import type { ActorAccess } from "./tools/policy.js";
 
 export const DEFAULT_MODEL = "openai-codex/gpt-5.4-mini";
 export const STATE_ROOT = "./state";
@@ -28,6 +29,13 @@ export function trustedWorkspaceRoots(env: Env = process.env): string[] {
 	return roots.length > 0 ? roots : [process.cwd()];
 }
 
+export function trustedOperatorAccess(env: Env = process.env): ActorAccess {
+	return {
+		trusted: listEnv(env, "HEYPI_TELEGRAM_USERS").length > 0 || listEnv(env, "HEYPI_TELEGRAM_CHATS").length > 0,
+		localDev: env.HEYPI_LOCAL_DEV_MUTATIONS === "true",
+	};
+}
+
 export function createTelegramCofounderConfig(
 	env: Env = process.env,
 	toolOptions: ToolFactoryOptions = {},
@@ -50,7 +58,11 @@ export function createTelegramCofounderConfig(
 			model: env.HEYPI_MODEL ?? DEFAULT_MODEL,
 			tools: [
 				...coreTools(),
-				...createCofounderTools({ trustedWorkspaceRoots: trustedWorkspaceRoots(env), ...toolOptions }),
+				...createCofounderTools({
+					access: trustedOperatorAccess(env),
+					trustedWorkspaceRoots: trustedWorkspaceRoots(env),
+					...toolOptions,
+				}),
 			],
 		}),
 		runtime: { root: workspace("./workspace") },

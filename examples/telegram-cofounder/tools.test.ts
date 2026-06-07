@@ -214,4 +214,17 @@ test("mutating tools are default-deny without trusted allowlist or local dev fla
 		await run(tools, "create_task", { title: "Launch", body: "Specific owner today", owner: "Huy" }),
 		/trusted Telegram user allowlist/,
 	);
+	assert.match(await run(tools, "route_browser", { request: "Open pricing page" }), /trusted Telegram user allowlist/);
+	assert.match(
+		await run(tools, "route_twitter", { request: "Read this tweet thread" }),
+		/trusted Telegram user allowlist/,
+	);
+	assert.match(
+		await run(tools, "route_research", { request: "Research competitors" }),
+		/trusted Telegram user allowlist/,
+	);
+	assert.match(
+		await run(tools, "recommend_meta_ads", { request: "Shape acquisition angle" }),
+		/trusted Telegram user allowlist/,
+	);
 });

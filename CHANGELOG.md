@@ -6,6 +6,9 @@
 - Added a Telegram co-founder example with Markdown-backed company memory, tasks, reports, selected skill handoffs, prompt guardrails, and deterministic transcript tests.
 - Added explicit trusted workspace roots for Telegram co-founder engineering handoffs.
 
+### Fixed
+- Wired Telegram co-founder trusted allowlists into mutating tool access and gated route-created task handoffs.
+
 ## [0.1.3] - 2026-06-04
 
 ### Added
