@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { test } from "node:test";
 import { createCofounderTools } from "./tools/index.js";
 import { FakeCodexRunner } from "./tools/runner.js";
@@ -12,14 +12,9 @@ type CofounderTools = ReturnType<typeof createCofounderTools>;
 async function harness() {
 	const repoRoot = await mkdtemp(join(tmpdir(), "telegram-cofounder-transcript-"));
 	const workspace = new CofounderWorkspace({ repoRoot, now: () => new Date("2026-06-06T12:00:00.000Z") });
-	const skills = ["agent-browser", "bird", "handoff", "codex"].map((name) => ({
-		name,
-		root: resolve("examples/telegram-cofounder/fixtures/skills", name),
-	}));
 	return createCofounderTools({
 		workspace,
 		access: { trusted: true, localDev: false },
-		skills,
 		runner: new FakeCodexRunner(),
 	});
 }

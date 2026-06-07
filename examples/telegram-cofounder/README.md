@@ -50,7 +50,7 @@ HEYPI_TRUSTED_WORKSPACE_ROOTS=/Volumes/BIWIN/CODES
 - Browser route through `agent-browser`.
 - X/Twitter route through `bird`.
 - Research route through Markdown task prompts.
-- Engineering/source/GitHub route through `handoff` plus Hermes Codex, selected skill-copy manifest, trusted approval, copy validation, and runner evidence.
+- Engineering/source/GitHub route through `handoff` plus Hermes Codex, trusted approval, and runner evidence.
 - Meta Ads pitch as the selected growth recommendation without Polsia pricing or targeting claims.
 
 ## Excluded features

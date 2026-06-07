@@ -1,7 +1,7 @@
 export type RunnerInput = {
 	cwd: string;
 	promptPath: string;
-	skillManifestPath: string;
+	manifestPath: string;
 };
 
 export type RunnerResult = {
@@ -35,7 +35,7 @@ export class CommandCodexRunner implements CodexRunner {
 	async start(input: RunnerInput): Promise<RunnerResult> {
 		return {
 			started: false,
-			command: `${this.command} --cwd ${input.cwd} --prompt ${input.promptPath} --skills ${input.skillManifestPath}`,
+			command: `${this.command} --cwd ${input.cwd} --prompt ${input.promptPath} --manifest ${input.manifestPath}`,
 			error: "Runtime command adapter is preview-only in this example; configure a trusted runner before live start.",
 		};
 	}

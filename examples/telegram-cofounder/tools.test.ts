@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { access, mkdir, mkdtemp } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
-import { SELECTED_SKILLS } from "./tools/capabilities.js";
 import { createCofounderTools } from "./tools/index.js";
 import { FakeCodexRunner } from "./tools/runner.js";
 import { CofounderWorkspace } from "./tools/workspace.js";
@@ -14,14 +13,9 @@ async function setup() {
 	const repoRoot = await mkdtemp(resolve("tmp/verify/telegram-cofounder-tools-"));
 	const workspace = new CofounderWorkspace({ repoRoot, now: () => new Date("2026-06-06T12:00:00.000Z") });
 	const trustedRoot = join(repoRoot, "trusted-root");
-	const skills = SELECTED_SKILLS.map((name) => ({
-		name,
-		root: resolve("examples/telegram-cofounder/fixtures/skills", name),
-	}));
 	const tools = createCofounderTools({
 		workspace,
 		access: { trusted: true, localDev: false },
-		skills,
 		runner: new FakeCodexRunner(),
 		trustedWorkspaceRoots: [process.cwd(), trustedRoot],
 	});
@@ -164,7 +158,7 @@ test("routes refuse secret capture and unconfirmed mutations", async () => {
 	assert.match(await run(tools, "route_browser", { request: "save API_TOKEN=abc123def456ghi789" }), /secret/);
 });
 
-test("engineering route copies selected skills and starts only with trusted confirmation", async () => {
+test("engineering route prepares and starts only with trusted confirmation", async () => {
 	const { tools } = await setup();
 	assert.match(
 		await run(tools, "route_engineering", {
@@ -182,6 +176,34 @@ test("engineering route copies selected skills and starts only with trusted conf
 	});
 	assert.match(started, /started Hermes Codex/);
 	assert.match(started, /fake-runner-started/);
+});
+
+test("engineering route prepares without configured skill catalog", async () => {
+	await mkdir(resolve("tmp/verify"), { recursive: true });
+	const repoRoot = await mkdtemp(resolve("tmp/verify/telegram-cofounder-handoff-"));
+	const workspace = new CofounderWorkspace({ repoRoot });
+	const tools = createCofounderTools({
+		workspace,
+		access: { trusted: true, localDev: true },
+		trustedWorkspaceRoots: [process.cwd()],
+	});
+	assert.match(
+		await run(tools, "route_engineering", {
+			title: "Build checkout",
+			request: "Implement checkout",
+			targetCwd: process.cwd(),
+		}),
+		/prepared engineering handoff/,
+	);
+	assert.doesNotMatch(
+		await run(tools, "route_engineering", {
+			title: "Build checkout",
+			request: "Implement checkout",
+			targetCwd: process.cwd(),
+			confirmed: true,
+		}),
+		/Missing selected skill/,
+	);
 });
 
 test("engineering route allows explicit trusted roots and blocks paths outside them", async () => {

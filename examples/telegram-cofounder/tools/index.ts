@@ -5,13 +5,11 @@ import { prepareEngineeringHandoff } from "./handoff.js";
 import { type ActorAccess, mutatingAllowed } from "./policy.js";
 import { routeBrowser, routeMetaAds, routeResearch, routeTwitter } from "./routes.js";
 import { type CodexRunner, FakeCodexRunner } from "./runner.js";
-import { SkillCatalog, type SkillSource } from "./skill-catalog.js";
 import { CofounderWorkspace, type RecurringSchedule } from "./workspace.js";
 
 export type ToolFactoryOptions = {
 	workspace?: CofounderWorkspace;
 	access?: ActorAccess;
-	skills?: SkillSource[];
 	runner?: CodexRunner;
 	trustedWorkspaceRoots?: string[];
 };
@@ -19,7 +17,6 @@ export type ToolFactoryOptions = {
 export function createCofounderTools(options: ToolFactoryOptions = {}) {
 	const workspace = options.workspace ?? new CofounderWorkspace();
 	const access = options.access ?? { trusted: false, localDev: process.env.HEYPI_LOCAL_DEV_MUTATIONS === "true" };
-	const catalog = new SkillCatalog({ skills: options.skills ?? [] });
 	const runner =
 		options.runner ??
 		new FakeCodexRunner({ started: false, command: "hermes-codex", error: "no runtime runner configured" });
@@ -192,8 +189,7 @@ export function createCofounderTools(options: ToolFactoryOptions = {}) {
 		}),
 		tool<{ title: string; request: string; targetCwd: string; confirmed?: boolean }>({
 			name: "route_engineering",
-			description:
-				"Prepare or start a Hermes Codex engineering handoff after selected skill-copy validation and approval.",
+			description: "Prepare or start a Hermes Codex engineering handoff after trusted approval.",
 			parameters: Type.Object({
 				title: Type.String(),
 				request: Type.String(),
@@ -201,7 +197,7 @@ export function createCofounderTools(options: ToolFactoryOptions = {}) {
 				confirmed: Type.Optional(Type.Boolean()),
 			}),
 			execute: async (input) => {
-				const result = await prepareEngineeringHandoff(workspace, catalog, runner, {
+				const result = await prepareEngineeringHandoff(workspace, runner, {
 					...input,
 					access: { ...access, confirmed: input.confirmed },
 					trustedWorkspaceRoots,
