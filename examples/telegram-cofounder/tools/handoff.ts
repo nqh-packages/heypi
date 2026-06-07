@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { SELECTED_SKILLS } from "./capabilities.js";
-import { type ActorAccess, confirmedMutationAllowed } from "./policy.js";
+import { type ActorAccess, confirmedMutationAllowed, mutatingAllowed } from "./policy.js";
 import type { CodexRunner } from "./runner.js";
 import type { SkillCatalog } from "./skill-catalog.js";
 import { type CofounderWorkspace, hash, WorkspaceError } from "./workspace.js";
@@ -23,6 +23,9 @@ export async function prepareEngineeringHandoff(
 	const target = resolve(input.targetCwd);
 	if (!isWithinTrustedRoot(target, input.trustedWorkspaceRoots))
 		return { state: "blocked", text: "blocked: target cwd must stay inside a trusted workspace root" };
+
+	const mutation = mutatingAllowed(input.access);
+	if (!mutation.allowed) return { state: "blocked", text: `blocked: ${mutation.reason}` };
 
 	const handoff = await workspace.writeHandoff({
 		title: input.title,

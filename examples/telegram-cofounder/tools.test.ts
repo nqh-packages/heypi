@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { access, mkdir, mkdtemp } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
+import { SELECTED_SKILLS } from "./tools/capabilities.js";
 import { createCofounderTools } from "./tools/index.js";
 import { FakeCodexRunner } from "./tools/runner.js";
 import { CofounderWorkspace } from "./tools/workspace.js";
@@ -13,7 +14,7 @@ async function setup() {
 	const repoRoot = await mkdtemp(resolve("tmp/verify/telegram-cofounder-tools-"));
 	const workspace = new CofounderWorkspace({ repoRoot, now: () => new Date("2026-06-06T12:00:00.000Z") });
 	const trustedRoot = join(repoRoot, "trusted-root");
-	const skills = ["agent-browser", "bird", "handoff", "hermes-codex"].map((name) => ({
+	const skills = SELECTED_SKILLS.map((name) => ({
 		name,
 		root: resolve("examples/telegram-cofounder/fixtures/skills", name),
 	}));
@@ -126,7 +127,7 @@ test("capability discovery separates direct, selected, unavailable, and excluded
 	const { tools } = await setup();
 	const report = await run(tools, "list_capabilities");
 	assert.match(report, /Direct local tools/);
-	assert.match(report, /agent-browser, bird, handoff, hermes-codex/);
+	assert.match(report, /agent-browser, bird, handoff, codex/);
 	assert.match(report, /Excluded features/);
 	assert.equal(await run(tools, "classify_capability", { request: "support tickets" }), "excluded");
 	assert.equal(await run(tools, "classify_capability", { request: "browser research" }), "selected-route");
@@ -206,9 +207,11 @@ test("engineering route allows explicit trusted roots and blocks paths outside t
 test("mutating tools are default-deny without trusted allowlist or local dev flag", async () => {
 	await mkdir(resolve("tmp/verify"), { recursive: true });
 	const repoRoot = await mkdtemp(resolve("tmp/verify/telegram-cofounder-deny-"));
+	const workspace = new CofounderWorkspace({ repoRoot });
 	const tools = createCofounderTools({
-		workspace: new CofounderWorkspace({ repoRoot }),
+		workspace,
 		access: { trusted: false, localDev: false },
+		trustedWorkspaceRoots: [process.cwd()],
 	});
 	assert.match(
 		await run(tools, "create_task", { title: "Launch", body: "Specific owner today", owner: "Huy" }),
@@ -227,4 +230,14 @@ test("mutating tools are default-deny without trusted allowlist or local dev fla
 		await run(tools, "recommend_meta_ads", { request: "Shape acquisition angle" }),
 		/trusted Telegram user allowlist/,
 	);
+	assert.match(
+		await run(tools, "route_engineering", {
+			title: "Build checkout",
+			request: "Implement checkout",
+			targetCwd: process.cwd(),
+		}),
+		/trusted Telegram user allowlist/,
+	);
+	assert.deepEqual(await workspace.list("handoffs"), []);
+	await assert.rejects(() => access(join(repoRoot, "state", "handoff-bundles")));
 });

@@ -11,6 +11,7 @@ mise.toml
 *.log
 *.tgz
 coverage/
+__pycache__/
 examples/*/workspace/
 examples/*/memory/
 examples/*/state/

@@ -12,7 +12,7 @@ type CofounderTools = ReturnType<typeof createCofounderTools>;
 async function harness() {
 	const repoRoot = await mkdtemp(join(tmpdir(), "telegram-cofounder-transcript-"));
 	const workspace = new CofounderWorkspace({ repoRoot, now: () => new Date("2026-06-06T12:00:00.000Z") });
-	const skills = ["agent-browser", "bird", "handoff", "hermes-codex"].map((name) => ({
+	const skills = ["agent-browser", "bird", "handoff", "codex"].map((name) => ({
 		name,
 		root: resolve("examples/telegram-cofounder/fixtures/skills", name),
 	}));

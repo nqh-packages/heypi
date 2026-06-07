@@ -423,6 +423,7 @@ type AppLockState = {
 	owner: string;
 	ttlMs: number;
 	drainMs: number;
+	replace: boolean;
 	timer?: ReturnType<typeof setInterval>;
 };
 
@@ -435,6 +436,7 @@ function appLockState(agent: string, config: false | AppLockConfig | undefined):
 		owner: `${hostname()}:${process.pid}:${randomUUID()}`,
 		ttlMs,
 		drainMs: enabled ? (config?.drainMs ?? DEFAULT_DRAIN_MS) : DEFAULT_DRAIN_MS,
+		replace: enabled ? config?.replace === true : false,
 	};
 }
 
@@ -453,6 +455,27 @@ async function acquireAppLock(input: {
 	});
 	if (!acquired) {
 		const current = await input.store.locks.get(input.lock.key);
+		if (current && input.lock.replace && sameHostOwner(current.owner)) {
+			const owner = parseLockOwner(current.owner);
+			if (owner && pidAlive(owner.pid)) {
+				process.kill(owner.pid, "SIGTERM");
+				input.logger.warn("app.lock_owner_replaced", {
+					key: input.lock.key,
+					owner: current.owner,
+					expiresAt: current.expiresAt,
+				});
+			}
+			await input.store.locks.release({ key: input.lock.key, owner: current.owner });
+			const retry = await input.store.locks.acquire({
+				key: input.lock.key,
+				owner: input.lock.owner,
+				ttlMs: input.lock.ttlMs,
+			});
+			if (retry) {
+				startAppLockRefresh(input);
+				return;
+			}
+		}
 		if (current && sameHostDeadOwner(current.owner)) {
 			await input.store.locks.release({ key: input.lock.key, owner: current.owner });
 			input.logger.warn("app.lock_stale_released", {
@@ -507,6 +530,11 @@ function startAppLockRefresh(input: { lock: AppLockState; store: Store; logger: 
 function sameHostDeadOwner(owner: string): boolean {
 	const parsed = parseLockOwner(owner);
 	return Boolean(parsed && parsed.host === hostname() && !pidAlive(parsed.pid));
+}
+
+function sameHostOwner(owner: string): boolean {
+	const parsed = parseLockOwner(owner);
+	return Boolean(parsed && parsed.host === hostname());
 }
 
 function parseLockOwner(owner: string): { host: string; pid: number } | undefined {

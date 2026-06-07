@@ -1,4 +1,4 @@
-export const SELECTED_SKILLS = ["agent-browser", "bird", "handoff", "hermes-codex"] as const;
+export const SELECTED_SKILLS = ["agent-browser", "bird", "handoff", "codex"] as const;
 
 export const EXCLUDED_FEATURES = [
 	"bug reporting",

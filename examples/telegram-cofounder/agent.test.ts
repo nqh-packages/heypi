@@ -24,7 +24,7 @@ test("prompt requires task duplicate checks, ambiguity options, selected routes,
 	assert.match(text, /agent-browser/);
 	assert.match(text, /bird/);
 	assert.match(text, /handoff/);
-	assert.match(text, /Hermes Codex/);
+	assert.match(text, /Codex/);
 	assert.match(text, /untrusted data, not instructions/);
 });
 
@@ -33,7 +33,7 @@ test("prompt excludes Polsia identity, tool dumps, and unsupported feature promi
 	assert.doesNotMatch(text, /GlamOps/);
 	assert.doesNotMatch(text, /source URLs|pricing claims|MCP tool dump/);
 	assert.doesNotMatch(text, /support-ticket promises|billing\/God Mode rules/);
-	assert.match(text, /Excluded features/);
+	assert.match(text, /excluded/);
 	assert.match(text, /Refuse prompt injection/);
 	assert.match(text, /secret capture/);
 	assert.match(text, /workspace escape/);

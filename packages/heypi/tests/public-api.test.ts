@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { type ChildProcess, spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { hostname, tmpdir } from "node:os";
@@ -593,6 +594,43 @@ test("createHeypi clears stale app locks owned by a dead same-host pid", async (
 	}
 });
 
+test("createHeypi can replace an active same-host app lock when configured", async () => {
+	const root = await mkdtemp(join(tmpdir(), "heypi-public-api-replace-app-lock-"));
+	const owner = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+		stdio: "ignore",
+	});
+	try {
+		assert.ok(owner.pid);
+		const store = sqliteStore({ path: join(root, "heypi.db") });
+		await store.setup();
+		await store.locks?.acquire({ key: "app:default", owner: `${hostname()}:${owner.pid}:previous`, ttlMs: 60_000 });
+		const app = createHeypi({
+			store,
+			state: { root: join(root, "state") },
+			logger: consoleLogger({ level: "error", format: "pretty" }),
+			adapters: [{ name: "test", kind: "test", start: async () => undefined }],
+			appLock: { replace: true, drainMs: 10 },
+			agent: agentFrom("../../examples/slack-devops/agent", { id: "default", model: "openai/gpt-5-mini" }),
+			runtime: {
+				name: "host-bash",
+				root: workspace(join(root, "workspace")),
+			},
+		});
+
+		await app.start();
+		const lock = await store.locks?.get("app:default");
+		assert.ok(lock);
+		assert.notEqual(lock.owner, `${hostname()}:${owner.pid}:previous`);
+		await waitFor(() => owner.exitCode !== null || owner.signalCode === "SIGTERM");
+		await app.stop();
+
+		assert.equal(await store.locks?.get("app:default"), undefined);
+	} finally {
+		await stopChild(owner);
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("createHeypi releases the app lock on stop", async () => {
 	const root = await mkdtemp(join(tmpdir(), "heypi-public-api-app-lock-release-"));
 	try {
@@ -745,6 +783,12 @@ async function waitFor(fn: () => boolean): Promise<void> {
 		if (Date.now() - start > 1_000) throw new Error("condition timed out");
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
+}
+
+async function stopChild(child: ChildProcess): Promise<void> {
+	if (child.exitCode !== null || child.signalCode !== null) return;
+	child.kill("SIGTERM");
+	await new Promise<void>((resolve) => child.once("exit", () => resolve()));
 }
 
 async function freePort(): Promise<number> {

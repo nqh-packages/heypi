@@ -8,6 +8,8 @@
 
 ### Fixed
 - Wired Telegram co-founder trusted allowlists into mutating tool access and gated route-created task handoffs.
+- Prevented untrusted Telegram co-founder engineering handoffs from writing artifacts before access checks.
+- Enabled Telegram co-founder local dev restarts to replace old same-host app locks.
 
 ## [0.1.3] - 2026-06-04
 

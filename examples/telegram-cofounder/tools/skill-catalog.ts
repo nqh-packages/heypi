@@ -13,6 +13,7 @@ export type CopiedSkill = {
 	target: string;
 	sha256: string;
 	bytes: number;
+	redacted: boolean;
 };
 
 export type CopyManifest = {
@@ -53,16 +54,16 @@ export class SkillCatalog {
 				if (fileInfo.size > this.maxFileBytes)
 					throw new WorkspaceError(`Skill file too large: ${name}/${rel}`, "file_too_large");
 				const content = await readFile(source, "utf8");
-				if (redactSecrets(content) !== content)
-					throw new WorkspaceError(`Secret-shaped content in selected skill: ${name}/${rel}`, "secret_detected");
+				const redacted = redactSecrets(content);
 				await mkdir(dirname(target), { recursive: true });
-				await writeFile(target, content, "utf8");
+				await writeFile(target, redacted, "utf8");
 				copied.push({
 					name,
 					source: `${basename(skill.root)}/${rel}`.split(sep).join("/"),
 					target: relative(targetRoot, target).split(sep).join("/"),
-					sha256: hash(content),
-					bytes: Buffer.byteLength(content, "utf8"),
+					sha256: hash(redacted),
+					bytes: Buffer.byteLength(redacted, "utf8"),
+					redacted: redacted !== content,
 				});
 			}
 		}

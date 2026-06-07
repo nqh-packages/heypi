@@ -9,6 +9,7 @@
 			"!packages/heypi/drizzle/meta",
 			"!.heypi",
 			"!examples/*/state",
+			"!examples/telegram-cofounder/fixtures/skills",
 			"!packages/heypi/src/admin/assets",
 			"!packages/heypi/src/core/assets"
 		]

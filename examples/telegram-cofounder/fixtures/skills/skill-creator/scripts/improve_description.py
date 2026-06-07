@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+"""Improve a skill description based on eval results.
+
+The core prompt is harness-agnostic.
+Text generation is delegated to the selected harness adapter.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.harness_adapters import AdapterError, resolve_adapter, supported_adapter_names
+from scripts.utils import parse_skill_md
+
+
+def _build_improvement_prompt(
+    skill_name: str,
+    skill_content: str,
+    current_description: str,
+    eval_results: dict,
+    history: list[dict],
+    discovery_description: str,
+    test_results: dict | None = None,
+) -> str:
+    failed_triggers = [
+        result for result in eval_results["results"] if result["should_trigger"] and not result["pass"]
+    ]
+    false_triggers = [
+        result for result in eval_results["results"] if not result["should_trigger"] and not result["pass"]
+    ]
+
+    train_score = f"{eval_results['summary']['passed']}/{eval_results['summary']['total']}"
+    if test_results:
+        test_score = f"{test_results['summary']['passed']}/{test_results['summary']['total']}"
+        scores_summary = f"Train: {train_score}, Test: {test_score}"
+    else:
+        scores_summary = f"Train: {train_score}"
+
+    prompt = f"""You are optimizing a skill description for a coding-agent skill called \"{skill_name}\".
+
+A skill is a progressively disclosed instruction bundle: the harness first exposes lightweight metadata such as the skill name and description, and only loads the full skill file if the agent decides the skill is relevant.
+
+In this harness, skill discovery works like this:
+<discovery_model>
+{discovery_description}
+</discovery_model>
+
+When a user sends a query, the agent decides whether to consult the skill mainly from the visible metadata, especially the description. Your goal is to write a description that triggers for relevant queries and stays quiet for irrelevant ones.
+
+Here's the current description:
+<current_description>
+\"{current_description}\"
+</current_description>
+
+Current scores ({scores_summary}):
+<scores_summary>
+"""
+
+    if failed_triggers:
+        prompt += "FAILED TO TRIGGER (should have triggered but didn't):\n"
+        for result in failed_triggers:
+            prompt += f'  - "{result["query"]}" (triggered {result["triggers"]}/{result["runs"]} times)\n'
+        prompt += "\n"
+
+    if false_triggers:
+        prompt += "FALSE TRIGGERS (triggered but shouldn't have):\n"
+        for result in false_triggers:
+            prompt += f'  - "{result["query"]}" (triggered {result["triggers"]}/{result["runs"]} times)\n'
+        prompt += "\n"
+
+    if history:
+        prompt += "PREVIOUS ATTEMPTS (do NOT repeat these — try something structurally different):\n\n"
+        for item in history:
+            train_s = f"{item.get('train_passed', item.get('passed', 0))}/{item.get('train_total', item.get('total', 0))}"
+            test_s = (
+                f"{item.get('test_passed', '?')}/{item.get('test_total', '?')}"
+                if item.get("test_passed") is not None
+                else None
+            )
+            score_str = f"train={train_s}" + (f", test={test_s}" if test_s else "")
+            prompt += f"<attempt {score_str}>\n"
+            prompt += f'Description: "{item["description"]}"\n'
+            if "results" in item:
+                prompt += "Train results:\n"
+                for result in item["results"]:
+                    status = "PASS" if result["pass"] else "FAIL"
+                    prompt += (
+                        f'  [{status}] "{result["query"][:80]}" '
+                        f'(triggered {result["triggers"]}/{result["runs"]})\n'
+                    )
+            if item.get("note"):
+                prompt += f'Note: {item["note"]}\n'
+            prompt += "</attempt>\n\n"
+
+    prompt += f"""</scores_summary>
+
+Skill content (for context on what the skill does):
+<skill_content>
+{skill_content}
+</skill_content>
+
+Based on the failures, write a new and improved description that is more likely to trigger correctly.
+Do not overfit to the exact sample queries. Generalize from them into broader user intents and adjacent contexts where this skill should or should not be used.
+
+Constraints:
+- keep it around 100-200 words
+- there is a hard limit of 1024 characters
+- phrase it as guidance for when to use the skill
+- focus on user intent more than internal implementation details
+- make it distinctive enough that it competes well against other available skills
+- avoid turning it into an ever-growing keyword dump
+
+Respond with only the new description text in <new_description> tags, nothing else."""
+
+    return prompt
+
+
+def _extract_description(text: str) -> str:
+    match = re.search(r"<new_description>(.*?)</new_description>", text, re.DOTALL)
+    return match.group(1).strip().strip('"') if match else text.strip().strip('"')
+
+
+def improve_description(
+    skill_name: str,
+    skill_content: str,
+    current_description: str,
+    eval_results: dict,
+    history: list[dict],
+    adapter_name: str,
+    model: str | None,
+    test_results: dict | None = None,
+    log_dir: Path | None = None,
+    iteration: int | None = None,
+    timeout: int = 300,
+) -> str:
+    adapter = resolve_adapter(adapter_name)
+    if not adapter.capabilities.text_generation:
+        raise AdapterError(
+            f"Adapter '{adapter.name}' does not support automated description improvement. "
+            "Use an adapter with text generation support or revise the description manually."
+        )
+
+    prompt = _build_improvement_prompt(
+        skill_name=skill_name,
+        skill_content=skill_content,
+        current_description=current_description,
+        eval_results=eval_results,
+        history=history,
+        discovery_description=adapter.discovery_description(),
+        test_results=test_results,
+    )
+
+    text = adapter.generate_text(prompt=prompt, model=model, timeout=timeout)
+    description = _extract_description(text)
+
+    transcript: dict = {
+        "iteration": iteration,
+        "adapter": adapter.name,
+        "prompt": prompt,
+        "response": text,
+        "parsed_description": description,
+        "char_count": len(description),
+        "over_limit": len(description) > 1024,
+    }
+
+    if len(description) > 1024:
+        shorten_prompt = (
+            f"{prompt}\n\n"
+            f"---\n\n"
+            f"A previous attempt produced this description, which at {len(description)} characters is over the 1024-character hard limit:\n\n"
+            f'"{description}"\n\n'
+            f"Rewrite it to stay under 1024 characters while preserving the most important trigger coverage. "
+            f"Respond with only the new description in <new_description> tags."
+        )
+        shorten_text = adapter.generate_text(prompt=shorten_prompt, model=model, timeout=timeout)
+        shortened = _extract_description(shorten_text)
+
+        transcript["rewrite_prompt"] = shorten_prompt
+        transcript["rewrite_response"] = shorten_text
+        transcript["rewrite_description"] = shortened
+        transcript["rewrite_char_count"] = len(shortened)
+        description = shortened
+
+    transcript["final_description"] = description
+
+    if log_dir:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / f"improve_iter_{iteration or 'unknown'}.json"
+        log_file.write_text(json.dumps(transcript, indent=2))
+
+    return description
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Improve a skill description based on eval results")
+    parser.add_argument("--eval-results", required=True, help="Path to eval results JSON (from run_eval.py)")
+    parser.add_argument("--skill-path", required=True, help="Path to skill directory")
+    parser.add_argument("--history", default=None, help="Path to history JSON (previous attempts)")
+    parser.add_argument("--adapter", default="auto", choices=supported_adapter_names(), help="Harness adapter to use")
+    parser.add_argument("--model", default=None, help="Optional model identifier for adapters that support model selection")
+    parser.add_argument("--timeout", type=int, default=300, help="Timeout for adapter text generation")
+    parser.add_argument("--verbose", action="store_true", help="Print progress to stderr")
+    args = parser.parse_args()
+
+    skill_path = Path(args.skill_path)
+    if not (skill_path / "SKILL.md").exists():
+        print(f"Error: No SKILL.md found at {skill_path}", file=sys.stderr)
+        sys.exit(1)
+
+    eval_results = json.loads(Path(args.eval_results).read_text())
+    history = json.loads(Path(args.history).read_text()) if args.history else []
+
+    name, _, content = parse_skill_md(skill_path)
+    current_description = eval_results["description"]
+
+    if args.verbose:
+        print(f"Adapter: {resolve_adapter(args.adapter).name}", file=sys.stderr)
+        print(f"Current: {current_description}", file=sys.stderr)
+        print(f"Score: {eval_results['summary']['passed']}/{eval_results['summary']['total']}", file=sys.stderr)
+
+    try:
+        new_description = improve_description(
+            skill_name=name,
+            skill_content=content,
+            current_description=current_description,
+            eval_results=eval_results,
+            history=history,
+            adapter_name=args.adapter,
+            model=args.model,
+            timeout=args.timeout,
+        )
+    except AdapterError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    if args.verbose:
+        print(f"Improved: {new_description}", file=sys.stderr)
+
+    output = {
+        "adapter": resolve_adapter(args.adapter).name,
+        "description": new_description,
+        "history": history
+        + [
+            {
+                "description": current_description,
+                "passed": eval_results["summary"]["passed"],
+                "failed": eval_results["summary"]["failed"],
+                "total": eval_results["summary"]["total"],
+                "results": eval_results["results"],
+            }
+        ],
+    }
+    print(json.dumps(output, indent=2))
+
+
+if __name__ == "__main__":
+    main()

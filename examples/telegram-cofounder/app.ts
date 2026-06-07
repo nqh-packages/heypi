@@ -3,6 +3,7 @@ import { createCofounderTools, type ToolFactoryOptions } from "./tools/index.js"
 import type { ActorAccess } from "./tools/policy.js";
 
 export const DEFAULT_MODEL = "openai-codex/gpt-5.4-mini";
+export const DEV_APP_LOCK_DRAIN_MS = 1_000;
 export const STATE_ROOT = "./state";
 
 export type Env = Record<string, string | undefined>;
@@ -20,6 +21,29 @@ export function requiredEnv(env: Env, name: string): string {
 	return value;
 }
 
+export function telegramBotToken(env: Env = process.env): string {
+	const value = env === process.env ? process.env.TELEGRAM_BOT_TOKEN : env.TELEGRAM_BOT_TOKEN;
+	if (!value) throw new Error("Missing env var: TELEGRAM_BOT_TOKEN");
+	return value;
+}
+
+export function telegramChats(env: Env = process.env): string[] {
+	const raw = env === process.env ? process.env.HEYPI_TELEGRAM_CHATS : env.HEYPI_TELEGRAM_CHATS;
+	return listEnv({ HEYPI_TELEGRAM_CHATS: raw }, "HEYPI_TELEGRAM_CHATS");
+}
+
+export function telegramUsers(env: Env = process.env): string[] {
+	const raw = env === process.env ? process.env.HEYPI_TELEGRAM_USERS : env.HEYPI_TELEGRAM_USERS;
+	return listEnv({ HEYPI_TELEGRAM_USERS: raw }, "HEYPI_TELEGRAM_USERS");
+}
+
+export function devAppLock(env: Env = process.env): HeypiConfig["appLock"] {
+	const appEnv = env === process.env ? process.env.APP_ENV : env.APP_ENV;
+	const localDev = env === process.env ? process.env.HEYPI_LOCAL_DEV_MUTATIONS : env.HEYPI_LOCAL_DEV_MUTATIONS;
+	if (appEnv === "development" || localDev === "true") return { drainMs: DEV_APP_LOCK_DRAIN_MS, replace: true };
+	return undefined;
+}
+
 export function trustedWorkspaceRoots(env: Env = process.env): string[] {
 	const rawRoots = env === process.env ? process.env.HEYPI_TRUSTED_WORKSPACE_ROOTS : env.HEYPI_TRUSTED_WORKSPACE_ROOTS;
 	const roots = (rawRoots ?? "")
@@ -31,7 +55,7 @@ export function trustedWorkspaceRoots(env: Env = process.env): string[] {
 
 export function trustedOperatorAccess(env: Env = process.env): ActorAccess {
 	return {
-		trusted: listEnv(env, "HEYPI_TELEGRAM_USERS").length > 0 || listEnv(env, "HEYPI_TELEGRAM_CHATS").length > 0,
+		trusted: telegramUsers(env).length > 0 || telegramChats(env).length > 0,
 		localDev: env.HEYPI_LOCAL_DEV_MUTATIONS === "true",
 	};
 }
@@ -44,11 +68,11 @@ export function createTelegramCofounderConfig(
 		state: { root: STATE_ROOT },
 		adapters: [
 			telegram({
-				token: requiredEnv(env, "TELEGRAM_BOT_TOKEN"),
+				token: telegramBotToken(env),
 				allow: {
-					chats: listEnv(env, "HEYPI_TELEGRAM_CHATS"),
+					chats: telegramChats(env),
 					dms: true,
-					users: listEnv(env, "HEYPI_TELEGRAM_USERS"),
+					users: telegramUsers(env),
 				},
 				trigger: "message",
 				streaming: true,
@@ -66,6 +90,7 @@ export function createTelegramCofounderConfig(
 			],
 		}),
 		runtime: { root: workspace("./workspace") },
+		appLock: devAppLock(env),
 	};
 }
 

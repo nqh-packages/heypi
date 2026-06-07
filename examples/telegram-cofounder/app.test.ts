@@ -3,8 +3,13 @@ import { test } from "node:test";
 import {
 	createTelegramCofounderConfig,
 	DEFAULT_MODEL,
+	DEV_APP_LOCK_DRAIN_MS,
+	devAppLock,
 	listEnv,
 	requiredEnv,
+	telegramBotToken,
+	telegramChats,
+	telegramUsers,
 	trustedOperatorAccess,
 	trustedWorkspaceRoots,
 } from "./app.js";
@@ -25,6 +30,8 @@ test("app allows HEYPI_MODEL override", () => {
 
 test("allowlist env parsing trims empty values", () => {
 	assert.deepEqual(listEnv({ HEYPI_TELEGRAM_USERS: " 42, , 43 " }, "HEYPI_TELEGRAM_USERS"), ["42", "43"]);
+	assert.deepEqual(telegramUsers({ HEYPI_TELEGRAM_USERS: " 42, , 43 " }), ["42", "43"]);
+	assert.deepEqual(telegramChats({ HEYPI_TELEGRAM_CHATS: " -10042, , -10043 " }), ["-10042", "-10043"]);
 });
 
 test("trusted workspace roots parse explicit roots and default to current cwd", () => {
@@ -48,6 +55,16 @@ test("trusted operator access follows Telegram allowlists and local dev flag", (
 	});
 });
 
+test("dev app lock replaces an old local process only for development contexts", () => {
+	assert.deepEqual(devAppLock({ APP_ENV: "development" }), { drainMs: DEV_APP_LOCK_DRAIN_MS, replace: true });
+	assert.deepEqual(devAppLock({ HEYPI_LOCAL_DEV_MUTATIONS: "true" }), {
+		drainMs: DEV_APP_LOCK_DRAIN_MS,
+		replace: true,
+	});
+	assert.equal(devAppLock({ APP_ENV: "production", HEYPI_LOCAL_DEV_MUTATIONS: "false" }), undefined);
+});
+
 test("app requires Telegram token only at config creation", () => {
 	assert.throws(() => requiredEnv({}, "TELEGRAM_BOT_TOKEN"), /Missing env var: TELEGRAM_BOT_TOKEN/);
+	assert.throws(() => telegramBotToken({}), /Missing env var: TELEGRAM_BOT_TOKEN/);
 });

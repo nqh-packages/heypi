@@ -154,6 +154,7 @@ export type SecretsConfig =
 export type AppLockConfig = {
 	ttlMs?: number;
 	drainMs?: number;
+	replace?: boolean;
 };
 
 export type HttpConfig = {
