@@ -104,7 +104,7 @@ This repo is the heypi workspace: a TypeScript framework for Pi-backed team chat
 | Runtime provider behavior | `pnpm --filter "./packages/heypi-runtime-*" run test` or the specific package test |
 | Scaffolder behavior | `pnpm --filter create-heypi run test` |
 | Telegram co-founder example | `pnpm run test:telegram:cofounder` |
-| Full completion gate | `varlock audit`, `pnpm run check`, `pnpm run typecheck`, and `pnpm run test` |
+| Full completion gate | `varlock audit`, `qlty check .`, `pnpm run check`, `pnpm run typecheck`, and `pnpm run test` |
 
 ## Current enforcement state
 
@@ -115,4 +115,4 @@ This repo is the heypi workspace: a TypeScript framework for Pi-backed team chat
 | Tests | `pnpm run test` |
 | Env governance | `varlock audit` against `.env.schema` |
 | Version/env hooks | Git commit hooks enforce root package version and Varlock coverage |
-| Qlty | Not initialized in this repo. Do not claim `qlty check .` coverage until `.qlty/` is deliberately added or a stronger native-enforcement exception is declared. |
+| Qlty | Initialized in `.qlty/qlty.toml`. Use `qlty check .` for repo-level security/scanner coverage alongside native gates. Native Biome remains the lint/format owner because the Qlty Biome adapter currently scans `.qlty/out` transient YAML and fails on empty files. |
