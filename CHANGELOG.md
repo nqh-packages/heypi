@@ -12,6 +12,7 @@
 - Added explicit trusted workspace roots for Telegram co-founder engineering handoffs.
 
 ### Fixed
+- Telegram runtime hardening: STT supersede only on voice/audio, bounded callback token registry with post-use eviction, moderation map pruning, and cached ffmpeg/whisper discovery.
 - Telegram group approval redaction now covers progress placeholder updates and scheduled `adapter.send` paths; approver DMs follow the same plan as inline replies.
 - Telegram webhook ingress awaits update handling before ACK, and graceful adapter stop no longer deletes the Bot API webhook (avoids deploy handoff races).
 - Telegram custom callback_data overflow now uses the 64-byte Bot API limit instead of the 200-character callback answer limit.

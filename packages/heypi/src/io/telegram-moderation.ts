@@ -102,6 +102,31 @@ export function spamDrop(
 	return undefined;
 }
 
+export function pruneModerationState(
+	state: {
+		flood: Map<string, number[]>;
+		spam: Map<string, { text: string; mentions: number; count: number }>;
+	},
+	config: TelegramGroupAutomationConfig | undefined,
+	now = Date.now(),
+): void {
+	const floodWindowMs =
+		config?.flood === true ? 10_000 : typeof config?.flood === "object" ? (config.flood.windowMs ?? 10_000) : 10_000;
+	if (config?.flood) {
+		for (const [key, times] of state.flood) {
+			const active = times.filter((at) => now - at <= floodWindowMs);
+			if (active.length) state.flood.set(key, active);
+			else state.flood.delete(key);
+		}
+	}
+	const spamMaxEntries = 256;
+	while (state.spam.size > spamMaxEntries) {
+		const oldest = state.spam.keys().next().value;
+		if (oldest === undefined) break;
+		state.spam.delete(oldest);
+	}
+}
+
 export function editedMessagesMode(config?: TelegramGroupAutomationConfig): TelegramEditedMessagesMode {
 	return config?.editedMessages ?? "ignore";
 }

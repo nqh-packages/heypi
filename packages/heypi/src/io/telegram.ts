@@ -40,6 +40,7 @@ import {
 	editedMessagesMode,
 	floodDrop,
 	linkDrop,
+	pruneModerationState,
 	shouldSendWelcome,
 	spamDrop,
 	type TelegramGroupAutomationConfig,
@@ -67,6 +68,7 @@ const TELEGRAM_TEXT_LIMIT = 4096;
 const TELEGRAM_CALLBACK_ANSWER_LIMIT = 200;
 const TELEGRAM_CALLBACK_DATA_LIMIT = 64;
 const STT_MAX_PENDING = 32;
+const CALLBACK_REGISTRY_MAX = 512;
 
 export const TELEGRAM_STT_DISABLED_MESSAGE =
 	"Voice transcription is disabled. Set stt.enabled to use local transcription.";
@@ -508,8 +510,12 @@ export async function handleTelegramUpdate(input: {
 	const channel = String(msg.chat.id);
 	const actor = String(msg.from?.id ?? "unknown");
 	const thread = threadKey(msg);
-	const sttGeneration = supersedeTelegramSttChat(input.sttState, thread);
 	const trace = `telegram:${msg.message_id}`;
+	const sttActive = input.sttState.abortControllers.has(thread);
+	let sttGeneration: number | undefined;
+	if (telegramVoiceOrAudio(msg) || sttActive) {
+		sttGeneration = supersedeTelegramSttChat(input.sttState, thread);
+	}
 	const context = (extra?: Record<string, unknown>) =>
 		logCtx({ trace, adapter: input.provider, kind: input.kind, channel, thread }, extra);
 	const allow = telegramAllowed(input.config.allow, { chat: channel, user: actor, isDm: telegramDm(msg) });
@@ -554,6 +560,7 @@ export async function handleTelegramUpdate(input: {
 		logModerationDrop(input.start.logger, input.config.groupAutomation, context(), drop);
 		return;
 	}
+	pruneModerationState(input.moderationState, input.config.groupAutomation);
 	if (telegramStickerOnly(msg)) {
 		await sendTelegramNotice({
 			client: input.client,
@@ -590,7 +597,7 @@ export async function handleTelegramUpdate(input: {
 					actor,
 					trace,
 					context,
-					generation: sttGeneration,
+					generation: sttGeneration as number,
 				}),
 			input.sttState.abortControllers.get(thread)?.signal,
 		);
@@ -917,6 +924,7 @@ export async function handleTelegramCallback(input: {
 			context(),
 		);
 		const payload = input.callbackRegistry.get(action.token);
+		input.callbackRegistry.delete(action.token);
 		await input.handler({
 			trace,
 			provider: input.provider,
@@ -1949,13 +1957,26 @@ function normalizeTelegramReplyMarkup(
 			const heypiReserved = callback_data.startsWith(`${HEYPI_PREFIX}:`);
 			if (!customToken && (callback_data.length > TELEGRAM_CALLBACK_DATA_LIMIT || !heypiReserved)) {
 				const token = randomBytes(8).toString("hex");
-				registry.set(token, { callback_data });
+				registerCallbackToken(registry, token, { callback_data });
 				callback_data = `${CUSTOM}:${token}`;
 			}
 			return { text: record.text, callback_data };
 		});
 	});
 	return { inline_keyboard };
+}
+
+function registerCallbackToken(
+	registry: Map<string, Record<string, unknown>>,
+	token: string,
+	payload: Record<string, unknown>,
+): void {
+	while (registry.size >= CALLBACK_REGISTRY_MAX) {
+		const oldest = registry.keys().next().value;
+		if (oldest === undefined) break;
+		registry.delete(oldest);
+	}
+	registry.set(token, payload);
 }
 
 function filesOf(msg: TelegramMessage): Array<{ id: string; name: string; mimeType?: string; size?: number }> {

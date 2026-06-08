@@ -4,6 +4,7 @@ import {
 	editedMessagesMode,
 	floodDrop,
 	linkDrop,
+	pruneModerationState,
 	shouldSendWelcome,
 	spamDrop,
 	telegramStickerOnly,
@@ -45,6 +46,17 @@ test("spamDrop blocks repeated text", () => {
 	const ctx = { channel: "-100", actor: "42", text: "same" };
 	assert.equal(spamDrop(config, spam, ctx), undefined);
 	assert.deepEqual(spamDrop(config, spam, ctx), { rule: "spam", reason: "repeated_text" });
+});
+
+test("pruneModerationState removes idle flood keys and caps spam entries", () => {
+	const flood = new Map<string, number[]>([["-100:42", [0]]]);
+	const spam = new Map<string, { text: string; mentions: number; count: number }>();
+	for (let index = 0; index < 300; index++) {
+		spam.set(`key-${index}`, { text: `t${index}`, mentions: 0, count: 1 });
+	}
+	pruneModerationState({ flood, spam }, { flood: { windowMs: 10_000 }, spam: true }, 20_000);
+	assert.equal(flood.has("-100:42"), false);
+	assert.equal(spam.size, 256);
 });
 
 test("welcomeTemplate and sticker-only helpers", () => {

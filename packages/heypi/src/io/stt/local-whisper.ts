@@ -92,16 +92,39 @@ export function resolveCustomCommand(config: SttLocalConfig | undefined, env: No
 
 /** Discovers whisper-cpp or whisper-cli on common install paths and PATH. */
 export async function discoverWhisperBinary(env: NodeJS.ProcessEnv = process.env): Promise<string | undefined> {
-	for (const name of ["whisper-cpp", "whisper-cli"]) {
-		const found = await discoverBinary(name, env);
-		if (found) return found;
-	}
-	return undefined;
+	return discoverCachedBinary("whisper", env, async () => {
+		for (const name of ["whisper-cpp", "whisper-cli"]) {
+			const found = await discoverBinary(name, env);
+			if (found) return found;
+		}
+		return undefined;
+	});
 }
 
 /** Discovers ffmpeg on common install paths and PATH. */
 export async function discoverFfmpegBinary(env: NodeJS.ProcessEnv = process.env): Promise<string | undefined> {
-	return discoverBinary("ffmpeg", env);
+	return discoverCachedBinary("ffmpeg", env, () => discoverBinary("ffmpeg", env));
+}
+
+const binaryDiscoveryCache = new Map<string, Promise<string | undefined>>();
+
+function discoverCachedBinary(
+	key: string,
+	env: NodeJS.ProcessEnv,
+	discover: () => Promise<string | undefined>,
+): Promise<string | undefined> {
+	const cacheKey = `${key}:${env.PATH ?? process.env.PATH ?? ""}`;
+	let pending = binaryDiscoveryCache.get(cacheKey);
+	if (!pending) {
+		pending = discover();
+		binaryDiscoveryCache.set(cacheKey, pending);
+	}
+	return pending;
+}
+
+/** Clears cached binary discovery (for tests). */
+export function resetBinaryDiscoveryCache(): void {
+	binaryDiscoveryCache.clear();
 }
 
 /** Transcribes local audio via ffmpeg + whisper.cpp with bounded size and timeout. */
