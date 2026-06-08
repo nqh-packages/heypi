@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import type { Logger } from "../src/core/log.js";
 import type { AppMessages } from "../src/core/messages.js";
@@ -11,6 +11,7 @@ import { BoundedQueue } from "../src/io/stt/queue.js";
 import {
 	handleTelegramCallback,
 	handleTelegramUpdate,
+	resolveTelegramSttAudioPath,
 	sttEnabled,
 	sttUnavailableUserMessage,
 	TELEGRAM_STT_BUSY_MESSAGE,
@@ -190,6 +191,88 @@ test("voice with stt enabled transcribes and invokes handler", async () => {
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	}
 	assert.equal(inboundText, "status report");
+});
+
+test("voice STT resolves runtime-relative attachment paths", async () => {
+	const root = await mkdtemp(join(tmpdir(), "heypi-telegram-stt-runtime-"));
+	const runtimeRoot = join(root, "runtime");
+	const modelPath = join(root, "model.bin");
+	const ffmpegPath = join(root, "ffmpeg");
+	const whisperPath = join(root, "whisper");
+	await writeFile(modelPath, Buffer.from("model"));
+	await writeExecutable(ffmpegPath);
+	await writeExecutable(whisperPath);
+	const relativeVoicePath = join("attachments", "incoming", "telegram", "2", "voice-unique.ogg");
+	const voiceFullPath = join(runtimeRoot, relativeVoicePath);
+	await mkdir(dirname(voiceFullPath), { recursive: true });
+	await writeFile(voiceFullPath, Buffer.from("audio-bytes"));
+	const store: AttachmentStore = {
+		async save(input) {
+			return { name: input.name, path: relativeVoicePath, size: input.data.byteLength };
+		},
+		async resolve(input) {
+			return { path: input.path, name: input.name ?? "voice.ogg", size: 1 };
+		},
+	};
+	let inboundText = "";
+	await handleTelegramUpdate({
+		client: mockClient({}),
+		start: {
+			handler: async (input) => {
+				inboundText = input.text;
+				return { text: "ack" };
+			},
+			logger: noopLogger,
+			attachments: store,
+			messages: testMessages,
+			app: {
+				agent: "agent",
+				runtime: { name: "guarded-bash", root: runtimeRoot },
+				state: { root: join(root, "state") },
+				memory: { enabled: false, scope: "agent", writePolicy: "off", maxChars: 4000 },
+				adapters: [{ name: "telegram", kind: "telegram" }],
+				startedAt: Date.now(),
+			},
+		},
+		config: {
+			token: "t",
+			trigger: "mention",
+			progress: false as const,
+			stt: { enabled: true, local: { modelPath, ffmpeg: ffmpegPath, binary: whisperPath } },
+			sttRunner: async (file, args) => {
+				if (file.endsWith("ffmpeg")) return { stdout: "", stderr: "", code: 0 };
+				if (file.endsWith("whisper")) {
+					const ofIndex = args.indexOf("-of");
+					const outputBase = ofIndex >= 0 ? args[ofIndex + 1] : join(root, "out");
+					if (outputBase) await writeFile(`${outputBase}.txt`, "runtime voice ok", "utf8");
+					return { stdout: "", stderr: "", code: 0 };
+				}
+				return { stdout: "", stderr: "", code: 1 };
+			},
+		},
+		delivery: new DeliveryQueue(false),
+		provider: "telegram",
+		kind: "telegram",
+		update: { update_id: 20, message: voiceMessage({ messageId: 2 }) },
+		stopped: () => false,
+		...telegramHarnessExtras(),
+	});
+	for (let attempt = 0; attempt < 50 && !inboundText; attempt += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+	assert.equal(inboundText, "runtime voice ok");
+});
+
+test("resolveTelegramSttAudioPath maps runtime-relative paths to host files", async () => {
+	const root = await mkdtemp(join(tmpdir(), "heypi-telegram-stt-resolve-"));
+	const runtimeRoot = join(root, "runtime");
+	const relative = join("attachments", "incoming", "telegram", "1", "voice.ogg");
+	const full = join(runtimeRoot, relative);
+	await mkdir(dirname(full), { recursive: true });
+	await writeFile(full, Buffer.from("voice"));
+	const resolved = await resolveTelegramSttAudioPath(relative, runtimeRoot);
+	assert.ok(resolved?.endsWith("attachments/incoming/telegram/1/voice.ogg"));
+	assert.equal(await resolveTelegramSttAudioPath("/attachments/incoming/telegram/1/voice.ogg", runtimeRoot), resolved);
 });
 
 test("missing STT prerequisites send AE4 message without handler", async () => {

@@ -11,6 +11,7 @@ import {
 	runtimeConfig,
 	telegramBotToken,
 	telegramChats,
+	telegramSttModelPath,
 	telegramUsers,
 	trustedOperatorAccess,
 	trustedWorkspaceRoots,
@@ -74,6 +75,11 @@ test("trusted operator access follows Telegram allowlists and local dev flag", (
 		trusted: false,
 		localDev: true,
 	});
+});
+
+test("telegramSttModelPath trims empty values", () => {
+	assert.equal(telegramSttModelPath({ HEYPI_STT_MODEL_PATH: " /models/base.en.bin " }), "/models/base.en.bin");
+	assert.equal(telegramSttModelPath({}), undefined);
 });
 
 test("dev app lock replaces an old local process only for development contexts", () => {

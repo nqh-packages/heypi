@@ -9,9 +9,10 @@
 - Telegram P2/P3 parity: optional Bot API webhook ingress, namespaced callbacks with custom reply markup, opt-in group automation (welcome, flood, link, spam, edited messages), polls/location/unsupported-type handling, and `examples/telegram-alerts`.
 - Slack and Discord shared-channel approval redaction with approver-only full UI (ephemeral/DM).
 - Added a Telegram co-founder example with Markdown-backed company memory, tasks, reports, selected skill handoffs, prompt guardrails, and deterministic transcript tests.
-- Added explicit trusted workspace roots for Telegram co-founder engineering handoffs.
+- Enabled opt-in voice transcription for the Telegram co-founder example when `HEYPI_STT_MODEL_PATH` is set.
 
 ### Fixed
+- Telegram voice STT now resolves runtime-scoped attachment paths before calling ffmpeg/whisper, fixing transcription on host runtimes like `guarded-bash`.
 - Telegram runtime hardening: STT supersede only on voice/audio, bounded callback token registry with post-use eviction, moderation map pruning, and cached ffmpeg/whisper discovery.
 - Telegram group approval redaction now covers progress placeholder updates and scheduled `adapter.send` paths; approver DMs follow the same plan as inline replies.
 - Telegram webhook ingress awaits update handling before ACK, and graceful adapter stop no longer deletes the Bot API webhook (avoids deploy handoff races).
