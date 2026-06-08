@@ -75,9 +75,23 @@ export type DocumentConverterConfig =
 			mimeTypes?: string[];
 	  };
 
-/** Creates a workspace-backed attachment store. Writes inbound files under a separate scoped attachment tree. */
+export type AttachmentPathRoots = {
+	storage: string;
+	runtime: string;
+};
+
+/** Picks the host root for an attachment path. Inbound chat files live under storage; runtime artifacts stay in the workspace. */
+export function attachmentHostRoot(path: string, roots: AttachmentPathRoots): string {
+	const normalized = path.replace(/^\/+/, "");
+	if (normalized.startsWith("attachments/") || normalized.startsWith("incoming/")) return roots.storage;
+	return roots.runtime;
+}
+
+/** Creates a workspace-backed attachment store. Inbound files use `config.root` or `state.root`; outbound runtime files resolve from `runtime.root`. */
 export function runtimeAttachments(runtime: Runtime, config: AttachmentConfig = {}): AttachmentStore {
 	const maxBytes = config.maxBytes ?? 25_000_000;
+	const storageRoot = config.root ?? runtime.root;
+	const roots: AttachmentPathRoots = { storage: storageRoot, runtime: runtime.root };
 	return {
 		maxBytes,
 		async save(input): Promise<Attachment> {
@@ -90,8 +104,8 @@ export function runtimeAttachments(runtime: Runtime, config: AttachmentConfig = 
 			const id = safeSegment(input.id ?? randomUUID());
 			const root = attachmentRoot(input.scope);
 			const relative = join(root, "incoming", provider, message, `${id}-${name}`);
-			await hostMkdir(runtime.root, join(root, "incoming", provider, message));
-			const full = await hostWritePath(runtime.root, relative);
+			await hostMkdir(storageRoot, join(root, "incoming", provider, message));
+			const full = await hostWritePath(storageRoot, relative);
 			await writeFile(full, input.data);
 			return compact({
 				name,
@@ -106,7 +120,8 @@ export function runtimeAttachments(runtime: Runtime, config: AttachmentConfig = 
 		},
 		async resolve(input, scope): Promise<ResolvedAttachment> {
 			assertAttachmentScope(input, scope);
-			const full = await hostRealPath(runtime.root, input.path);
+			const hostRoot = attachmentHostRoot(input.path, roots);
+			const full = await hostRealPath(hostRoot, input.path);
 			const info = await stat(full);
 			if (!info.isFile()) throw new Error(`attachment is not a file: ${input.path}`);
 			return compactResolved({
@@ -183,13 +198,15 @@ export async function attachmentInput(
 	attachments?: Attachment[],
 	config: AttachmentProcessingConfig = {},
 	logger?: Logger,
+	roots: AttachmentPathRoots = { storage: runtime.root, runtime: runtime.root },
 ): Promise<AttachmentInput> {
 	if (!attachments?.length) return { text: text.trim(), images: [] };
 	const images: ImageAttachment[] = [];
 	const parts = [text.trim()].filter(Boolean);
 	const refs: Attachment[] = [];
 	for (const attachment of attachments) {
-		const full = await hostRealPath(runtime.root, attachment.path);
+		const hostRoot = attachmentHostRoot(attachment.path, roots);
+		const full = await hostRealPath(hostRoot, attachment.path);
 		const mimeType = supportedImageMime(attachment);
 		if (mimeType) {
 			const data = await readFile(full);

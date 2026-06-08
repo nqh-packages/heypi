@@ -72,6 +72,40 @@ test("runtimeAttachments scopes inbound attachment access", async () => {
 	);
 });
 
+test("runtimeAttachments stores inbound under storage root and resolves outbound from runtime root", async () => {
+	const tmp = await mkdtemp(join(tmpdir(), "heypi-attachments-split-"));
+	const storageRoot = join(tmp, "state");
+	const runtimeRoot = join(tmp, "workspace");
+	await mkdir(storageRoot, { recursive: true });
+	await mkdir(runtimeRoot, { recursive: true });
+	const store = runtimeAttachments(runtime(runtimeRoot, "host-bash"), { root: storageRoot });
+	const keys = resolveScope({
+		agent: "agent",
+		provider: "telegram",
+		kind: "telegram",
+		channel: "8285331265",
+		actor: "8285331265",
+	}).channel;
+
+	const file = await store.save({
+		provider: "telegram",
+		id: "voice",
+		name: "note.ogg",
+		data: new TextEncoder().encode("voice"),
+		mimeType: "audio/ogg",
+		messageId: "149",
+		scope: keys,
+	});
+
+	assert.match(file.path, /^attachments\/scopes\//);
+	await readFile(join(storageRoot, "attachments/scopes", keys.path, "incoming/telegram/149/voice-note.ogg"), "utf8");
+	await assert.rejects(() => readFile(join(runtimeRoot, file.path), "utf8"));
+
+	await mkdir(join(runtimeRoot, "scopes", keys.path), { recursive: true });
+	await writeFile(join(runtimeRoot, "scopes", keys.path, "report.txt"), "report");
+	assert.equal((await store.resolve({ path: `scopes/${keys.path}/report.txt` }, keys)).size, 6);
+});
+
 test("runtimeAttachments writes sanitized files under runtime root", async () => {
 	const root = await mkdtemp(join(tmpdir(), "heypi-attachments-"));
 	const store = runtimeAttachments(runtime(root, "just-bash"));

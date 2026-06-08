@@ -109,6 +109,8 @@ export type RuntimeConfig = {
 
 export type AttachmentConfig = {
 	store?: AttachmentStore;
+	/** Host directory for inbound chat attachments. Defaults to `state.root`. */
+	root?: string;
 	maxBytes?: number;
 	process?: AttachmentProcessingConfig;
 };

@@ -110,6 +110,7 @@ export type AdapterStart = {
 		agentModel?: ModelConfig;
 		runtime: { name: string; root: string };
 		state: { root: string };
+		attachments?: { root: string };
 		memory: NormalizedMemoryConfig;
 		skills?: NormalizedSkillsConfig;
 		adapters: Array<{ name: string; kind: string }>;

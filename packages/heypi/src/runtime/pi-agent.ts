@@ -39,6 +39,7 @@ export type PiAgentInput = {
 	runtime: Runtime | ((scope?: string) => Runtime);
 	sessionRuntime?: Runtime;
 	attachmentRuntime?: Runtime;
+	attachmentStorageRoot?: string;
 	messages: Messages;
 	attachments?: AttachmentProcessingConfig;
 	memory?: MemoryStore;
@@ -191,6 +192,7 @@ export class PiAgent implements Agent {
 					attachments,
 					this.input.attachments,
 					log,
+					this.attachmentRoots(),
 				);
 				await session.steer(prompt.text, prompt.images);
 			},
@@ -201,6 +203,7 @@ export class PiAgent implements Agent {
 					attachments,
 					this.input.attachments,
 					log,
+					this.attachmentRoots(),
 				);
 				await session.followUp(prompt.text, prompt.images);
 			},
@@ -214,6 +217,7 @@ export class PiAgent implements Agent {
 					req.attachments,
 					this.input.attachments,
 					log,
+					this.attachmentRoots(),
 				);
 				await session.prompt(prompt.text, { expandPromptTemplates: false, images: prompt.images });
 			}
@@ -394,6 +398,14 @@ export class PiAgent implements Agent {
 
 	private attachmentRuntime(): Runtime {
 		return this.input.attachmentRuntime ?? this.runtimeFor();
+	}
+
+	private attachmentRoots(): { storage: string; runtime: string } {
+		const runtime = this.attachmentRuntime();
+		return {
+			storage: this.input.attachmentStorageRoot ?? runtime.root,
+			runtime: runtime.root,
+		};
 	}
 }
 

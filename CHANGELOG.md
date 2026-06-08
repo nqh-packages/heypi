@@ -12,6 +12,7 @@
 - Enabled opt-in voice transcription for the Telegram co-founder example when `HEYPI_STT_MODEL_PATH` is set.
 
 ### Fixed
+- Inbound chat attachments now default to `state.root` instead of `HEYPI_RUNTIME_ROOT`, so voice notes and other media no longer land in the bash workspace repo.
 - Telegram voice STT now resolves runtime-scoped attachment paths before calling ffmpeg/whisper, fixing transcription on host runtimes like `guarded-bash`.
 - Telegram inbound and callback replies now send `Outbound.poll` payloads, matching scheduled `adapter.send` behavior.
 - Telegram runtime hardening: STT supersede only on voice/audio, bounded callback token registry with post-use eviction, moderation map pruning, and cached ffmpeg/whisper discovery.

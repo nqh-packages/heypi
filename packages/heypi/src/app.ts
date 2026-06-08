@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createAdminAdapter } from "./admin/index.js";
 import type { AppLockConfig, HeypiConfig, HttpConfig } from "./config.js";
 import { ActiveRuns } from "./core/active.js";
@@ -85,7 +85,9 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 	const skills = new SkillStore(config.runtime.root, skillsConfig);
 	const secretsConfig = normalizeSecretsConfig(config.secrets);
 	const secrets = new SecretStore(secretsConfig);
-	const attachments = config.attachments?.store ?? runtimeAttachments(appRuntime, config.attachments);
+	const attachmentRoot = config.attachments?.root ? resolve(cwd, config.attachments.root) : stateRoot;
+	const attachments =
+		config.attachments?.store ?? runtimeAttachments(appRuntime, { ...config.attachments, root: attachmentRoot });
 	const queue = new Queue({
 		maxConcurrent: config.runtime.maxConcurrent ?? 12,
 		maxPerChat: config.runtime.maxConcurrentPerChat ?? 1,
@@ -123,6 +125,7 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 		runtime,
 		sessionRuntime: appRuntime,
 		attachmentRuntime: appRuntime,
+		attachmentStorageRoot: attachmentRoot,
 		messages: store.messages,
 		attachments: config.attachments?.process,
 		memory,
@@ -257,6 +260,7 @@ export function createHeypi(config: HeypiConfig): HeypiApp {
 						agentModel: config.agent.model,
 						runtime: { name: appRuntime.name, root: config.runtime.root },
 						state: { root: stateRoot },
+						attachments: { root: attachmentRoot },
 						memory: memoryConfig,
 						skills: skillsConfig,
 						adapters: config.adapters.map((item) => ({ name: item.name, kind: item.kind })),

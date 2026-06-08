@@ -18,13 +18,16 @@ createHeypi({
 
 | Option | Required | Default | Description |
 | --- | --- | --- | --- |
-| `store` | No | Runtime-backed store | Custom `AttachmentStore`. |
+| `store` | No | State-backed store | Custom `AttachmentStore`. |
+| `root` | No | `state.root` | Host directory for inbound chat attachments. |
 | `maxBytes` | No | `25_000_000` | Maximum inbound or outbound attachment size. |
 | `process.documents` | No | Off | Convert supported document attachments to text for the model. |
 
 ## Inbound files
 
-Supported adapters save delivered files into the runtime workspace under the active scope. Images can be passed to the model as image inputs. Text-like files are inlined. Unsupported binaries are stored but not passed to the model.
+Supported adapters save delivered files under `state.root` (or `attachments.root` when set). Images can be passed to the model as image inputs. Text-like files are inlined. Unsupported binaries are stored but not passed to the model.
+
+`HEYPI_RUNTIME_ROOT` is the bash workspace only. Inbound voice notes, photos, and documents do not land there unless you override `attachments.root`.
 
 Provider support differs. See [Adapters](../adapters/index.md).
 
@@ -96,4 +99,4 @@ Attachments are scoped to the active runtime workspace. Files from another scope
 
 ## Custom stores
 
-The default store is runtime-backed. Use a custom `AttachmentStore` when files need to live outside the runtime workspace, usually for multi-instance deployments.
+The default store saves inbound files under state and resolves outbound runtime artifacts from the active workspace. Use a custom `AttachmentStore` when files need to live elsewhere, usually for multi-instance deployments.

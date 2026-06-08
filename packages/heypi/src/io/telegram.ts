@@ -17,7 +17,13 @@ import type { ReplyAttachment } from "../core/types.js";
 import { chunkText } from "../render/chunk.js";
 import { hostRealPath } from "../runtime/path.js";
 import { resolveOutboundAttachments, saveInboundAttachments } from "./attachment-policy.js";
-import { type Attachment, type AttachmentStore, type ResolvedAttachment, responseBytes } from "./attachments.js";
+import {
+	type Attachment,
+	type AttachmentStore,
+	attachmentHostRoot,
+	type ResolvedAttachment,
+	responseBytes,
+} from "./attachments.js";
 import { runChatMessage } from "./chat-message.js";
 import { type DeliveryConfig, DeliveryQueue } from "./delivery.js";
 import { allowByDimensions, inboundAllowed, messageTriggered } from "./gate.js";
@@ -413,17 +419,26 @@ export function sttUnavailableUserMessage(reason: string): string {
 	return `${TELEGRAM_STT_UNAVAILABLE_MESSAGE} (${reason})`;
 }
 
-/** Resolves runtime-scoped attachment paths to host paths ffmpeg/whisper can read. */
+/** Resolves stored attachment paths to host paths ffmpeg/whisper can read. */
 export async function resolveTelegramSttAudioPath(
 	path: string | undefined,
-	runtimeRoot?: string,
+	roots?: string | { storage?: string; runtime?: string },
 ): Promise<string | undefined> {
 	if (!path) return undefined;
-	if (runtimeRoot) {
+	const resolved =
+		typeof roots === "string"
+			? { storage: roots, runtime: roots }
+			: { storage: roots?.storage, runtime: roots?.runtime };
+	const hostRoots = [
+		attachmentHostRoot(path, { storage: resolved.storage ?? "", runtime: resolved.runtime ?? "" }),
+		resolved.storage,
+		resolved.runtime,
+	].filter((root, index, list): root is string => Boolean(root) && list.indexOf(root) === index);
+	for (const root of hostRoots) {
 		try {
-			return await hostRealPath(runtimeRoot, path);
+			return await hostRealPath(root, path);
 		} catch {
-			// Fall through for host-absolute custom store paths outside the runtime root.
+			// Fall through for host-absolute custom store paths outside known roots.
 		}
 	}
 	try {
@@ -707,7 +722,10 @@ async function runTelegramSttJob(input: {
 	});
 	if (telegramSttStale(input.sttState, input.thread, input.generation)) return;
 	const savedPath = attachments?.[0]?.path;
-	const audioPath = await resolveTelegramSttAudioPath(savedPath, input.start.app?.runtime.root);
+	const audioPath = await resolveTelegramSttAudioPath(savedPath, {
+		storage: input.start.app?.attachments?.root ?? input.start.app?.state.root,
+		runtime: input.start.app?.runtime.root,
+	});
 	if (!audioPath) {
 		await sendTelegramNotice({
 			client: input.client,
