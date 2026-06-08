@@ -1,29 +1,98 @@
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { approvalStateLine, approvalStateTitle, codeFence } from "../core/approval-view.js";
+import { extname } from "node:path";
+import type { ApprovalConfig } from "../config.js";
+import {
+	approvalStateLine,
+	approvalStateTitle,
+	codeFence,
+	redactedApprovalPendingText,
+	redactedApprovalResolvedText,
+} from "../core/approval-view.js";
+import { type ActorPolicy, actorUsers } from "../core/approvers.js";
 import { message as errorMessage, type Logger, userError } from "../core/log.js";
 import type { AppMessages } from "../core/messages.js";
 import type { ScopedKey } from "../core/scope.js";
+import type { ReplyAttachment } from "../core/types.js";
 import { chunkText } from "../render/chunk.js";
 import { resolveOutboundAttachments, saveInboundAttachments } from "./attachment-policy.js";
 import { type Attachment, type AttachmentStore, type ResolvedAttachment, responseBytes } from "./attachments.js";
 import { runChatMessage } from "./chat-message.js";
 import { type DeliveryConfig, DeliveryQueue } from "./delivery.js";
-import { allowByDimensions, messageTriggered } from "./gate.js";
+import { allowByDimensions, inboundAllowed, messageTriggered } from "./gate.js";
 import type { Adapter, AdapterStart, AdapterTarget, Handler, Outbound } from "./handler.js";
 import { logCtx } from "./log-context.js";
-import { DraftReplyStream, type ReplyStreamOption } from "./reply-stream.js";
+import type { ReplyStreamOption } from "./reply-stream.js";
+import { DraftReplyStream } from "./reply-stream.js";
+import { type ExecRunner, transcribeLocal } from "./stt/local-whisper.js";
+import { BoundedQueue } from "./stt/queue.js";
+import type { SttConfig, SttLocalConfig } from "./stt/types.js";
+import {
+	chunkTelegramFormattedText,
+	formatTelegramText,
+	plainFallbackChunk,
+	type TelegramParseMode,
+	type TelegramTextChunk,
+	telegramParseModeApiValue,
+} from "./telegram-format.js";
 
-const APPROVE = "approve";
-const DENY = "deny";
-const CANCEL = "cancel";
-const STATUS = "status";
+import {
+	editedMessagesMode,
+	floodDrop,
+	linkDrop,
+	shouldSendWelcome,
+	spamDrop,
+	type TelegramGroupAutomationConfig,
+	type TelegramModerationDrop,
+	telegramStickerOnly,
+	telegramUnsupportedTypeReply,
+	welcomeTemplate,
+} from "./telegram-moderation.js";
+import {
+	registerTelegramWebhook,
+	resolveTelegramIngressMode,
+	resolveTelegramWebhookSecret,
+	resolveTelegramWebhookUrl,
+	TelegramUpdateDedupe,
+	telegramAllowedUpdates,
+} from "./telegram-webhook.js";
+
+const HEYPI_PREFIX = "heypi";
+const APPROVE = `${HEYPI_PREFIX}:approve`;
+const DENY = `${HEYPI_PREFIX}:deny`;
+const CANCEL = `${HEYPI_PREFIX}:cancel`;
+const STATUS = `${HEYPI_PREFIX}:status`;
+const CUSTOM = `${HEYPI_PREFIX}:custom`;
 const TELEGRAM_TEXT_LIMIT = 4096;
-const TELEGRAM_CALLBACK_LIMIT = 200;
+const TELEGRAM_CALLBACK_ANSWER_LIMIT = 200;
+const TELEGRAM_CALLBACK_DATA_LIMIT = 64;
+const STT_MAX_PENDING = 32;
+
+export const TELEGRAM_STT_DISABLED_MESSAGE =
+	"Voice transcription is disabled. Set stt.enabled to use local transcription.";
+export const TELEGRAM_STT_BUSY_MESSAGE = "Voice transcription is busy. Try again shortly.";
+export const TELEGRAM_STT_UNAVAILABLE_MESSAGE =
+	"Voice transcription is unavailable. Install ffmpeg and whisper-cpp and configure stt.local.modelPath.";
+export const TELEGRAM_PHOTO_ONLY_DEFAULT = "Photo received";
+
+export const TELEGRAM_UNSUPPORTED_TYPE_MESSAGE = telegramUnsupportedTypeReply();
+
+export type { TelegramGroupAutomationConfig };
+
+export type TelegramWebhookConfig = {
+	url?: string;
+	secret?: string;
+	path?: string;
+	maxBodyBytes?: number;
+};
 
 export type TelegramConfig = {
 	name?: string;
 	token: string;
 	apiUrl?: { override: string };
+	mode?: "poll" | "webhook";
+	webhook?: TelegramWebhookConfig;
+	groupAutomation?: TelegramGroupAutomationConfig;
 	pollTimeoutSeconds?: number;
 	allow?: TelegramAllow;
 	trigger?: TelegramTrigger;
@@ -31,6 +100,11 @@ export type TelegramConfig = {
 	progress?: TelegramProgress | false;
 	streaming?: ReplyStreamOption;
 	delivery?: DeliveryConfig | false;
+	parseMode?: TelegramParseMode;
+	stt?: SttConfig;
+	photoOnlyText?: string;
+	/** @internal Mock subprocess runner for STT tests. */
+	sttRunner?: ExecRunner;
 };
 
 export type TelegramTrigger = "mention" | "message";
@@ -46,7 +120,7 @@ export type TelegramProgress = {
 	delayMs?: number;
 };
 
-/** Creates a Telegram long-polling adapter. */
+/** Creates a Telegram adapter (long-poll by default; optional webhook ingress). */
 export function telegram(input: TelegramConfig): Adapter {
 	const name = input.name ?? "telegram";
 	const kind = "telegram";
@@ -55,6 +129,13 @@ export function telegram(input: TelegramConfig): Adapter {
 	let loop: Promise<void> | undefined;
 	let activeLogger: Logger | undefined;
 	let delivery = new DeliveryQueue(input.delivery);
+	const sttState = createTelegramSttState();
+	const updateDedupe = new TelegramUpdateDedupe();
+	const moderationState = {
+		flood: new Map<string, number[]>(),
+		spam: new Map<string, { text: string; mentions: number; count: number }>(),
+	};
+	const callbackRegistry = new Map<string, Record<string, unknown>>();
 
 	return {
 		name,
@@ -63,7 +144,9 @@ export function telegram(input: TelegramConfig): Adapter {
 			activeLogger = start.logger;
 			delivery = new DeliveryQueue(input.delivery, start.logger);
 			stopped = false;
-			start.logger.info("adapter.start", { adapter: name, kind });
+			const mode = resolveTelegramIngressMode(input.mode);
+			const allowedUpdates = telegramAllowedUpdates(input.groupAutomation);
+			start.logger.info("adapter.start", { adapter: name, kind, mode });
 			if (!telegramAllowConfigured(input.allow)) {
 				start.logger.warn("security.adapter_allow_missing", {
 					adapter: name,
@@ -72,12 +155,78 @@ export function telegram(input: TelegramConfig): Adapter {
 				});
 			}
 			if (input.apiUrl) start.logger.warn("telegram.api_url_override", { adapter: name, kind });
-			loop = poll({ client, start, config: input, delivery, provider: name, kind, stopped: () => stopped });
+			const shared = {
+				client,
+				start,
+				config: input,
+				delivery,
+				provider: name,
+				kind,
+				stopped: () => stopped,
+				sttState,
+				updateDedupe,
+				moderationState,
+				callbackRegistry,
+			};
+			if (mode === "webhook") {
+				if (!start.http) throw new Error("Telegram webhook mode requires shared HTTP registrar (http config)");
+				const webhookUrl = resolveTelegramWebhookUrl({
+					url: input.webhook?.url,
+					env: process.env,
+				});
+				if (!webhookUrl) {
+					throw new Error("Telegram webhook mode requires webhook.url or HEYPI_TELEGRAM_WEBHOOK_URL");
+				}
+				const secret = resolveTelegramWebhookSecret({
+					secret: input.webhook?.secret,
+					env: process.env,
+				});
+				const bot = await client.getMe().catch((error) => {
+					start.logger.warn("telegram.get_me_failed", {
+						adapter: name,
+						kind,
+						error: errorMessage(error),
+					});
+					return undefined;
+				});
+				registerTelegramWebhook({
+					start,
+					name,
+					path: input.webhook?.path,
+					secret,
+					maxBodyBytes: input.webhook?.maxBodyBytes,
+					logger: start.logger,
+					onUpdate: async (update) => {
+						if (!updateDedupe.check(update.update_id)) return;
+						await handleTelegramUpdate({
+							...shared,
+							update: update as TelegramUpdate,
+							botUsername: bot?.username,
+							botUserId: bot?.id,
+						});
+					},
+				});
+				await client.setWebhook({
+					url: webhookUrl,
+					secret_token: secret,
+					allowed_updates: allowedUpdates,
+				});
+				return;
+			}
+			await client.deleteWebhook().catch((error) => {
+				start.logger.debug("telegram.delete_webhook_failed", {
+					adapter: name,
+					kind,
+					error: errorMessage(error),
+				});
+			});
+			loop = poll({ ...shared, allowedUpdates });
 		},
 		async stop(): Promise<void> {
 			stopped = true;
+			for (const controller of sttState.abortControllers.values()) controller.abort();
 			await loop;
-			activeLogger?.info("adapter.stop", { adapter: name, kind });
+			activeLogger?.info("adapter.stop", { adapter: name, kind, mode: resolveTelegramIngressMode(input.mode) });
 		},
 		async send(target: AdapterTarget, out: Outbound, start?: AdapterStart): Promise<void> {
 			const chatId = telegramTargetChat(target);
@@ -92,13 +241,30 @@ export function telegram(input: TelegramConfig): Adapter {
 				logger: log,
 				context: { adapter: name, kind, channel: String(chatId), thread: target.thread },
 				delivery,
+				parseMode: input.parseMode,
+				allow: input.allow,
+				approvalConfig: start?.approval,
 			});
+			if (out.poll) {
+				await client.sendPoll({
+					chat_id: chatId,
+					message_thread_id: threadId,
+					question: out.poll.question,
+					options: out.poll.options,
+					is_anonymous: out.poll.isAnonymous,
+				});
+			}
 			if (out.attachments?.length) {
-				start?.logger.warn("telegram.scheduled_attachments_unsupported", {
-					adapter: name,
-					kind,
-					channel: target.channel,
-					thread: target.thread,
+				await deliverTelegramAttachments({
+					client,
+					store: start?.attachments,
+					chatId,
+					threadId,
+					attachments: out.attachments,
+					scope: out.attachmentScope,
+					logger: log ?? noopLogger,
+					context: { adapter: name, kind, channel: String(chatId), thread: target.thread },
+					delivery,
 				});
 			}
 			log?.debug("adapter.send", {
@@ -138,6 +304,14 @@ async function poll(input: {
 	provider: string;
 	kind: string;
 	stopped: () => boolean;
+	sttState: TelegramSttState;
+	updateDedupe: TelegramUpdateDedupe;
+	moderationState: {
+		flood: Map<string, number[]>;
+		spam: Map<string, { text: string; mentions: number; count: number }>;
+	};
+	callbackRegistry: Map<string, Record<string, unknown>>;
+	allowedUpdates: string[];
 }): Promise<void> {
 	let offset = 0;
 	const timeout = input.config.pollTimeoutSeconds ?? 25;
@@ -152,10 +326,15 @@ async function poll(input: {
 	});
 	while (!input.stopped()) {
 		try {
-			const updates = await input.client.getUpdates({ offset, timeout });
+			const updates = await input.client.getUpdates({
+				offset,
+				timeout,
+				allowed_updates: input.allowedUpdates,
+			});
 			for (const update of updates) {
 				offset = Math.max(offset, update.update_id + 1);
-				await handleUpdate({ ...input, update, botUsername: bot?.username });
+				if (!input.updateDedupe.check(update.update_id)) continue;
+				await handleTelegramUpdate({ ...input, update, botUsername: bot?.username, botUserId: bot?.id });
 			}
 			backoffMs = 1000;
 		} catch (error) {
@@ -171,7 +350,86 @@ async function poll(input: {
 	}
 }
 
-async function handleUpdate(input: {
+type TelegramSttState = {
+	queue: BoundedQueue;
+	generations: Map<string, number>;
+	abortControllers: Map<string, AbortController>;
+};
+
+function createTelegramSttState(): TelegramSttState {
+	return {
+		queue: new BoundedQueue({ maxConcurrent: 2, maxPerChat: 1, maxPending: STT_MAX_PENDING }),
+		generations: new Map(),
+		abortControllers: new Map(),
+	};
+}
+
+const noopLogger: Logger = {
+	debug: () => undefined,
+	info: () => undefined,
+	warn: () => undefined,
+	error: () => undefined,
+};
+
+/** Returns true when local STT is explicitly enabled in Telegram config. */
+export function sttEnabled(config?: SttConfig): boolean {
+	if (config === undefined || config === false) return false;
+	if (config === true) return true;
+	return config.enabled === true;
+}
+
+export function telegramVoiceOrAudio(msg: TelegramMessage): boolean {
+	return Boolean(msg.voice || msg.audio);
+}
+
+export function telegramPhotoOnly(msg: TelegramMessage): boolean {
+	return Boolean(msg.photo?.length && !textOf(msg).trim());
+}
+
+/** Voice, audio, and photo-only messages bypass mention-mode trigger gates. */
+export function telegramMediaTriggerBypass(msg: TelegramMessage): boolean {
+	return telegramVoiceOrAudio(msg) || telegramPhotoOnly(msg);
+}
+
+export function resolveTelegramInboundText(
+	msg: TelegramMessage,
+	photoOnlyText?: string,
+	fallbackText?: string,
+): string {
+	if (telegramPhotoOnly(msg)) return photoOnlyText ?? TELEGRAM_PHOTO_ONLY_DEFAULT;
+	return fallbackText ?? textOf(msg);
+}
+
+export function isTelegramImageMime(mimeType?: string, name?: string): boolean {
+	const mime = mimeType?.toLowerCase();
+	if (mime?.startsWith("image/")) return true;
+	const ext = extname(name ?? "").toLowerCase();
+	return ext === ".jpg" || ext === ".jpeg" || ext === ".png" || ext === ".gif" || ext === ".webp";
+}
+
+export function sttUnavailableUserMessage(reason: string): string {
+	return `${TELEGRAM_STT_UNAVAILABLE_MESSAGE} (${reason})`;
+}
+
+function resolveTelegramSttLocal(config?: SttConfig): SttLocalConfig | undefined {
+	if (typeof config === "object" && config !== null) return config.local;
+	return undefined;
+}
+
+function supersedeTelegramSttChat(state: TelegramSttState, chat: string): number {
+	const next = (state.generations.get(chat) ?? 0) + 1;
+	state.generations.set(chat, next);
+	state.abortControllers.get(chat)?.abort();
+	const controller = new AbortController();
+	state.abortControllers.set(chat, controller);
+	return next;
+}
+
+function telegramSttStale(state: TelegramSttState, chat: string, generation: number): boolean {
+	return (state.generations.get(chat) ?? 0) !== generation;
+}
+
+export async function handleTelegramUpdate(input: {
 	client: TelegramClient;
 	start: AdapterStart;
 	config: TelegramConfig;
@@ -181,10 +439,41 @@ async function handleUpdate(input: {
 	update: TelegramUpdate;
 	stopped: () => boolean;
 	botUsername?: string;
+	botUserId?: number;
+	sttState: TelegramSttState;
+	moderationState: {
+		flood: Map<string, number[]>;
+		spam: Map<string, { text: string; mentions: number; count: number }>;
+	};
+	callbackRegistry: Map<string, Record<string, unknown>>;
 }): Promise<void> {
+	const member = input.update.my_chat_member ?? input.update.chat_member;
+	if (member?.new_chat_member?.is_bot && member.chat) {
+		if (
+			shouldSendWelcome({
+				config: input.config.groupAutomation,
+				newMemberIsBot: member.new_chat_member.is_bot,
+				botUserId: input.botUserId,
+			}) &&
+			member.new_chat_member.id === input.botUserId
+		) {
+			const template = welcomeTemplate(input.config.groupAutomation);
+			if (template) {
+				await input.delivery.run(
+					() =>
+						input.client.sendMessage({
+							chat_id: member.chat.id,
+							text: template,
+						}),
+					{ adapter: input.provider, kind: input.kind, channel: String(member.chat.id) },
+				);
+			}
+		}
+		return;
+	}
 	const callback = input.update.callback_query;
 	if (callback) {
-		await handleCallback({
+		await handleTelegramCallback({
 			client: input.client,
 			handler: input.start.handler,
 			logger: input.start.logger,
@@ -194,14 +483,32 @@ async function handleUpdate(input: {
 			delivery: input.delivery,
 			provider: input.provider,
 			kind: input.kind,
+			allow: input.config.allow,
+			parseMode: input.config.parseMode,
+			approvalConfig: input.start.approval,
+			callbackRegistry: input.callbackRegistry,
 		});
 		return;
 	}
-	const msg = input.update.message;
+	const editedMode = editedMessagesMode(input.config.groupAutomation);
+	const msg =
+		(input.update.edited_message && editedMode !== "ignore" ? input.update.edited_message : undefined) ??
+		input.update.message;
 	if (!msg?.chat || msg.from?.is_bot) return;
+	if (input.update.edited_message && editedMode === "log") {
+		input.start.logger.info("telegram.edited_message", {
+			adapter: input.provider,
+			kind: input.kind,
+			channel: String(msg.chat.id),
+			messageId: msg.message_id,
+			actor: String(msg.from?.id ?? "unknown"),
+		});
+		return;
+	}
 	const channel = String(msg.chat.id);
 	const actor = String(msg.from?.id ?? "unknown");
 	const thread = threadKey(msg);
+	const sttGeneration = supersedeTelegramSttChat(input.sttState, thread);
 	const trace = `telegram:${msg.message_id}`;
 	const context = (extra?: Record<string, unknown>) =>
 		logCtx({ trace, adapter: input.provider, kind: input.kind, channel, thread }, extra);
@@ -218,13 +525,16 @@ async function handleUpdate(input: {
 	}
 	const rawText = textOf(msg);
 	const text = stripTelegramMention(rawText, input.botUsername);
-	const trigger = telegramTriggered(input.config.trigger, {
-		text: rawText,
-		isDm: telegramDm(msg),
-		botUsername: input.botUsername,
-		thread: Boolean(msg.message_thread_id),
-		threadTrigger: input.config.threadTrigger,
-	});
+	const mediaBypass = telegramMediaTriggerBypass(msg);
+	const trigger = mediaBypass
+		? ({ ok: true } as const)
+		: telegramTriggered(input.config.trigger, {
+				text: rawText,
+				isDm: telegramDm(msg),
+				botUsername: input.botUsername,
+				thread: Boolean(msg.message_thread_id),
+				threadTrigger: input.config.threadTrigger,
+			});
 	if (!trigger.ok) {
 		input.start.logger.debug(
 			"adapter.drop",
@@ -235,6 +545,197 @@ async function handleUpdate(input: {
 		);
 		return;
 	}
+	const moderationCtx = { channel, actor, text: rawText || text };
+	const drop =
+		floodDrop(input.config.groupAutomation, input.moderationState.flood, moderationCtx) ??
+		linkDrop(input.config.groupAutomation, moderationCtx) ??
+		spamDrop(input.config.groupAutomation, input.moderationState.spam, moderationCtx);
+	if (drop) {
+		logModerationDrop(input.start.logger, input.config.groupAutomation, context(), drop);
+		return;
+	}
+	if (telegramStickerOnly(msg)) {
+		await sendTelegramNotice({
+			client: input.client,
+			message: msg,
+			text: TELEGRAM_UNSUPPORTED_TYPE_MESSAGE,
+			logger: input.start.logger,
+			context: context(),
+			delivery: input.delivery,
+			parseMode: input.config.parseMode,
+		});
+		return;
+	}
+	if (telegramVoiceOrAudio(msg)) {
+		if (!sttEnabled(input.config.stt)) {
+			await sendTelegramNotice({
+				client: input.client,
+				message: msg,
+				text: TELEGRAM_STT_DISABLED_MESSAGE,
+				logger: input.start.logger,
+				context: context(),
+				delivery: input.delivery,
+				parseMode: input.config.parseMode,
+			});
+			return;
+		}
+		const submit = input.sttState.queue.trySubmit(
+			thread,
+			() =>
+				runTelegramSttJob({
+					...input,
+					msg,
+					thread,
+					channel,
+					actor,
+					trace,
+					context,
+					generation: sttGeneration,
+				}),
+			input.sttState.abortControllers.get(thread)?.signal,
+		);
+		if (!submit.ok) {
+			await sendTelegramNotice({
+				client: input.client,
+				message: msg,
+				text: TELEGRAM_STT_BUSY_MESSAGE,
+				logger: input.start.logger,
+				context: context(),
+				delivery: input.delivery,
+				parseMode: input.config.parseMode,
+			});
+			return;
+		}
+		void submit.job
+			.then(({ waitMs }) => {
+				input.start.logger.debug("telegram.stt.complete", context({ waitMs }));
+			})
+			.catch((error: unknown) => {
+				input.start.logger.warn("telegram.stt.failed", context({ error: errorMessage(error) }));
+			});
+		return;
+	}
+	const inboundText = resolveTelegramInboundText(msg, input.config.photoOnlyText, text);
+	const location = msg.location ? { latitude: msg.location.latitude, longitude: msg.location.longitude } : undefined;
+	await processTelegramMessage({
+		...input,
+		msg,
+		channel,
+		actor,
+		thread,
+		trace,
+		context,
+		text: inboundText,
+		location,
+		callbackRegistry: input.callbackRegistry,
+	});
+}
+
+function logModerationDrop(
+	logger: Logger,
+	config: TelegramGroupAutomationConfig | undefined,
+	context: Record<string, unknown>,
+	drop: TelegramModerationDrop,
+): void {
+	const payload = { ...context, rule: drop.rule, reason: drop.reason };
+	if (config?.auditDrops) logger.info("telegram.moderation.drop", payload);
+	else logger.debug("telegram.moderation.drop", payload);
+}
+
+async function runTelegramSttJob(input: {
+	client: TelegramClient;
+	start: AdapterStart;
+	config: TelegramConfig;
+	delivery: DeliveryQueue;
+	provider: string;
+	kind: string;
+	msg: TelegramMessage;
+	channel: string;
+	actor: string;
+	thread: string;
+	trace: string;
+	context: (extra?: Record<string, unknown>) => Record<string, unknown>;
+	generation: number;
+	sttState: TelegramSttState;
+	callbackRegistry: Map<string, Record<string, unknown>>;
+}): Promise<void> {
+	if (telegramSttStale(input.sttState, input.thread, input.generation)) return;
+	const scope = input.start.handler.attachmentScope?.({
+		provider: input.provider,
+		kind: input.kind,
+		channel: input.channel,
+		actor: input.actor,
+	});
+	const attachments = await telegramAttachments({
+		client: input.client,
+		store: input.start.attachments,
+		scope,
+		message: input.msg,
+		provider: input.provider,
+		kind: input.kind,
+		messageId: String(input.msg.message_id),
+		trace: input.trace,
+		logger: input.start.logger,
+	});
+	if (telegramSttStale(input.sttState, input.thread, input.generation)) return;
+	const audioPath = attachments?.[0]?.path;
+	if (!audioPath) {
+		await sendTelegramNotice({
+			client: input.client,
+			message: input.msg,
+			text: sttUnavailableUserMessage("audio file not found"),
+			logger: input.start.logger,
+			context: input.context(),
+			delivery: input.delivery,
+			parseMode: input.config.parseMode,
+		});
+		return;
+	}
+	const result = await transcribeLocal({
+		audioPath,
+		config: resolveTelegramSttLocal(input.config.stt),
+		env: process.env,
+		runner: input.config.sttRunner,
+	});
+	if (telegramSttStale(input.sttState, input.thread, input.generation)) return;
+	if (!result.ok) {
+		await sendTelegramNotice({
+			client: input.client,
+			message: input.msg,
+			text: sttUnavailableUserMessage(result.reason),
+			logger: input.start.logger,
+			context: input.context(),
+			delivery: input.delivery,
+			parseMode: input.config.parseMode,
+		});
+		return;
+	}
+	await processTelegramMessage({
+		...input,
+		text: result.text,
+		preloadedAttachments: attachments,
+	});
+}
+
+async function processTelegramMessage(input: {
+	client: TelegramClient;
+	start: AdapterStart;
+	config: TelegramConfig;
+	delivery: DeliveryQueue;
+	provider: string;
+	kind: string;
+	msg: TelegramMessage;
+	channel: string;
+	actor: string;
+	thread: string;
+	trace: string;
+	context: (extra?: Record<string, unknown>) => Record<string, unknown>;
+	text: string;
+	preloadedAttachments?: Attachment[];
+	location?: { latitude: number; longitude: number };
+	callbackRegistry: Map<string, Record<string, unknown>>;
+}): Promise<void> {
+	const msg = input.msg;
 	const streaming = streamingEnabled(input.config.streaming);
 	const progress = telegramProgress(input.config.progress, streaming);
 	const stream = telegramReplyStream({
@@ -242,7 +743,7 @@ async function handleUpdate(input: {
 		client: input.client,
 		message: msg,
 		logger: input.start.logger,
-		context: context(),
+		context: input.context(),
 		delivery: input.delivery,
 	});
 	const pending = startProgress({
@@ -250,43 +751,51 @@ async function handleUpdate(input: {
 		chatId: msg.chat.id,
 		threadId: msg.message_thread_id,
 		replyTo: msg.message_id,
-		cancelId: trace,
+		cancelId: input.trace,
 		progress,
+		isDm: telegramDm(msg),
+		allow: input.config.allow,
+		approvalConfig: input.start.approval,
 		logger: input.start.logger,
-		context: context({ event: input.update.update_id }),
+		context: input.context({ event: msg.message_id }),
 		delivery: input.delivery,
 	});
 	await runChatMessage({
 		logger: input.start.logger,
-		context,
+		context: input.context,
 		handler: input.start.handler,
 		stream,
 		progress: pending,
-		loadAttachments: (scope) =>
-			telegramAttachments({
-				client: input.client,
-				store: input.start.attachments,
-				scope,
-				message: msg,
-				provider: input.provider,
-				kind: input.kind,
-				messageId: String(msg.message_id),
-				trace,
-				logger: input.start.logger,
-			}),
+		loadAttachments: input.preloadedAttachments
+			? async () => input.preloadedAttachments
+			: (scope) =>
+					telegramAttachments({
+						client: input.client,
+						store: input.start.attachments,
+						scope,
+						message: msg,
+						provider: input.provider,
+						kind: input.kind,
+						messageId: String(msg.message_id),
+						trace: input.trace,
+						logger: input.start.logger,
+					}),
 		inbound: () => ({
-			trace,
+			trace: input.trace,
 			provider: input.provider,
 			kind: input.kind,
-			eventId: String(input.update.update_id),
-			channel,
+			eventId: String(msg.message_id),
+			channel: input.channel,
 			channelName: telegramChatName(msg.chat),
-			actor,
+			actor: input.actor,
 			actorName: telegramUserName(msg.from),
-			thread,
+			thread: input.thread,
 			threadName: msg.message_thread_id ? `topic ${msg.message_thread_id}` : undefined,
-			text,
-			data: msg,
+			text: input.text,
+			data: {
+				...msg,
+				location: input.location,
+			},
 		}),
 		placement: {
 			fresh: async (out) => {
@@ -297,8 +806,12 @@ async function handleUpdate(input: {
 					out,
 					skipFirst: false,
 					logger: input.start.logger,
-					context: context(),
+					context: input.context(),
 					delivery: input.delivery,
+					parseMode: input.config.parseMode,
+					allow: input.config.allow,
+					approvalConfig: input.start.approval,
+					callbackRegistry: input.callbackRegistry,
 				});
 			},
 			streamed: async (out) => {
@@ -309,12 +822,12 @@ async function handleUpdate(input: {
 					attachments: out.attachments,
 					scope: out.attachmentScope,
 					logger: input.start.logger,
-					context: context(),
+					context: input.context(),
 					delivery: input.delivery,
 				});
 			},
 			progress: async (out) => {
-				const edited = await pending.update(out);
+				const edited = await pending.update(out, input.config.parseMode);
 				await sendTelegramOutput({
 					client: input.client,
 					store: input.start.attachments,
@@ -322,28 +835,33 @@ async function handleUpdate(input: {
 					out,
 					skipFirst: edited,
 					logger: input.start.logger,
-					context: context(),
+					context: input.context(),
 					delivery: input.delivery,
+					parseMode: input.config.parseMode,
+					allow: input.config.allow,
+					approvalConfig: input.start.approval,
+					callbackRegistry: input.callbackRegistry,
 				});
 			},
 		},
 		sendError: async () => {
 			const text = userError(input.start.messages?.error);
-			const edited = await pending.update({ text });
+			const edited = await pending.update({ text }, input.config.parseMode);
 			await sendChunks({
 				client: input.client,
 				message: msg,
 				text,
 				skipFirst: edited,
 				logger: input.start.logger,
-				context: context(),
+				context: input.context(),
 				delivery: input.delivery,
+				parseMode: input.config.parseMode,
 			});
 		},
 	});
 }
 
-async function handleCallback(input: {
+export async function handleTelegramCallback(input: {
 	client: TelegramClient;
 	handler: Handler;
 	logger: Logger;
@@ -353,6 +871,10 @@ async function handleCallback(input: {
 	delivery: DeliveryQueue;
 	provider: string;
 	kind: string;
+	allow?: TelegramAllow;
+	parseMode?: TelegramParseMode;
+	approvalConfig?: ApprovalConfig;
+	callbackRegistry: Map<string, Record<string, unknown>>;
 }): Promise<void> {
 	const msg = input.callback.message;
 	const action = parseTelegramCallback(input.callback.data);
@@ -366,6 +888,54 @@ async function handleCallback(input: {
 	const trace = `telegram:${input.callback.id}`;
 	const context = (extra?: Record<string, unknown>) =>
 		logCtx({ trace, adapter: input.provider, kind: input.kind, channel }, extra);
+	const allow = inboundAllowed(
+		(ctx) => telegramAllowed(input.allow, { chat: ctx.channel, user: ctx.actor, isDm: ctx.isDm }),
+		{ channel, actor, isDm: telegramDm(msg) },
+	);
+	if (!allow.ok) {
+		input.logger.debug(
+			"adapter.drop",
+			context({
+				actor,
+				reason: allow.reason,
+			}),
+		);
+		await input.delivery.run(
+			() =>
+				input.client.answerCallbackQuery({
+					callback_query_id: input.callback.id,
+					text: "Not allowed",
+					show_alert: true,
+				}),
+			context(),
+		);
+		return;
+	}
+	if (action.kind === "custom") {
+		await input.delivery.run(
+			() => input.client.answerCallbackQuery({ callback_query_id: input.callback.id }),
+			context(),
+		);
+		const payload = input.callbackRegistry.get(action.token);
+		await input.handler({
+			trace,
+			provider: input.provider,
+			kind: input.kind,
+			eventId: input.callback.id,
+			channel,
+			actor,
+			actorName: telegramUserName(input.callback.from),
+			thread,
+			text: `callback:${action.token}`,
+			data: {
+				type: "telegram_callback",
+				token: action.token,
+				payload,
+				callbackData: input.callback.data,
+			},
+		});
+		return;
+	}
 	let answered = false;
 	let acknowledged = false;
 	const answer = async () => {
@@ -376,43 +946,45 @@ async function handleCallback(input: {
 		);
 		answered = true;
 	};
+	const isDm = telegramDm(msg);
+	const mode = input.parseMode ?? "plain";
+	const resolvedChunk = (out: Outbound, state: Outbound["approvalResolution"], actor?: string, original?: string) =>
+		firstFormattedChunk(
+			telegramVisibleResolvedText(out, state, actor, original, isDm),
+			Boolean(out.approval) && isDm,
+			mode,
+		);
 	const acknowledge = async (out: Outbound) => {
 		await answer();
-		await input.delivery.run(
-			() =>
-				input.client.editMessageText({
-					chat_id: msg.chat.id,
-					message_id: msg.message_id,
-					text: firstChunk(
-						telegramResolvedApprovalText(out, "approved", telegramActor(input.callback.from)),
-						false,
-					),
-					reply_markup: emptyMarkup(),
-				}),
-			context(),
-		);
+		await editTelegramText({
+			client: input.client,
+			chatId: msg.chat.id,
+			messageId: msg.message_id,
+			chunk: resolvedChunk(out, "approved", telegramActor(input.callback.from)),
+			replyMarkup: emptyMarkup(),
+			logger: input.logger,
+			context: context(),
+			delivery: input.delivery,
+		});
 		acknowledged = true;
 	};
 	const replace = async (out: Outbound) => {
 		await answer();
-		await input.delivery.run(
-			() =>
-				input.client.editMessageText({
-					chat_id: msg.chat.id,
-					message_id: msg.message_id,
-					text: firstChunk(
-						telegramResolvedApprovalText(
-							out,
-							out.approvalResolution ?? (action.kind === "deny" ? "rejected" : "approved"),
-							telegramActor(input.callback.from),
-							msg.text,
-						),
-						false,
-					),
-					reply_markup: emptyMarkup(),
-				}),
-			context(),
-		);
+		await editTelegramText({
+			client: input.client,
+			chatId: msg.chat.id,
+			messageId: msg.message_id,
+			chunk: resolvedChunk(
+				out,
+				out.approvalResolution ?? (action.kind === "deny" ? "rejected" : "approved"),
+				telegramActor(input.callback.from),
+				msg.text,
+			),
+			replyMarkup: emptyMarkup(),
+			logger: input.logger,
+			context: context(),
+			delivery: input.delivery,
+		});
 	};
 	try {
 		const out = await input.handler({
@@ -435,19 +1007,16 @@ async function handleCallback(input: {
 		if (out.private) {
 			if (out.replaceOriginal) {
 				await answer();
-				await input.delivery.run(
-					() =>
-						input.client.editMessageText({
-							chat_id: msg.chat.id,
-							message_id: msg.message_id,
-							text: firstChunk(
-								telegramResolvedApprovalText(out, out.approvalResolution, undefined, msg.text),
-								false,
-							),
-							reply_markup: emptyMarkup(),
-						}),
-					context(),
-				);
+				await editTelegramText({
+					client: input.client,
+					chatId: msg.chat.id,
+					messageId: msg.message_id,
+					chunk: resolvedChunk(out, out.approvalResolution, undefined, msg.text),
+					replyMarkup: emptyMarkup(),
+					logger: input.logger,
+					context: context(),
+					delivery: input.delivery,
+				});
 				return;
 			}
 			answered = true;
@@ -455,7 +1024,7 @@ async function handleCallback(input: {
 				() =>
 					input.client.answerCallbackQuery({
 						callback_query_id: input.callback.id,
-						text: truncate(out.text, TELEGRAM_CALLBACK_LIMIT),
+						text: truncate(out.text, TELEGRAM_CALLBACK_ANSWER_LIMIT),
 						show_alert: true,
 					}),
 				context(),
@@ -472,32 +1041,24 @@ async function handleCallback(input: {
 				logger: input.logger,
 				context: context({ thread }),
 				delivery: input.delivery,
+				parseMode: mode,
+				allow: input.allow,
+				approvalConfig: input.approvalConfig,
+				callbackRegistry: input.callbackRegistry,
 			});
 			return;
 		}
-		const rendered = {
-			...out,
-			text: out.text,
-		};
 		if (action.kind === "deny" && out.approvalResolution) {
-			await input.delivery.run(
-				() =>
-					input.client.editMessageText({
-						chat_id: msg.chat.id,
-						message_id: msg.message_id,
-						text: firstChunk(
-							telegramResolvedApprovalText(
-								out,
-								out.approvalResolution,
-								telegramActor(input.callback.from),
-								msg.text,
-							),
-							false,
-						),
-						reply_markup: emptyMarkup(),
-					}),
-				context(),
-			);
+			await editTelegramText({
+				client: input.client,
+				chatId: msg.chat.id,
+				messageId: msg.message_id,
+				chunk: resolvedChunk(out, out.approvalResolution, telegramActor(input.callback.from), msg.text),
+				replyMarkup: emptyMarkup(),
+				logger: input.logger,
+				context: context(),
+				delivery: input.delivery,
+			});
 			return;
 		}
 		if (action.kind === "approve") {
@@ -509,29 +1070,51 @@ async function handleCallback(input: {
 				logger: input.logger,
 				context: context({ thread }),
 				delivery: input.delivery,
+				parseMode: mode,
+				allow: input.allow,
+				approvalConfig: input.approvalConfig,
+				callbackRegistry: input.callbackRegistry,
 			});
 			return;
 		}
-		const approval = rendered.approval;
-		await input.delivery.run(
-			() =>
-				input.client.editMessageText({
-					chat_id: msg.chat.id,
-					message_id: msg.message_id,
-					text: firstChunk(telegramApprovalText(rendered.text, approval), Boolean(approval)),
-					reply_markup: approval ? approvalMarkup(approval) : undefined,
-				}),
-			context(),
-		);
+		const approval = out.approval;
+		const plan = telegramApprovalDisplayPlan({ text: out.text, approval, isDm });
+		await editTelegramText({
+			client: input.client,
+			chatId: msg.chat.id,
+			messageId: msg.message_id,
+			chunk: firstFormattedChunk(plan.visibleText, plan.showMarkup, mode),
+			replyMarkup: plan.showMarkup && approval ? approvalMarkup(approval) : emptyMarkup(),
+			logger: input.logger,
+			context: context(),
+			delivery: input.delivery,
+		});
+		if (plan.groupApproval && approval) {
+			await dmTelegramApprovers({
+				client: input.client,
+				allow: input.allow,
+				approvalConfig: input.approvalConfig,
+				approval,
+				text: out.text,
+				parseMode: mode,
+				logger: input.logger,
+				context: context(),
+				delivery: input.delivery,
+			});
+		}
 		await sendTelegramOutput({
 			client: input.client,
 			store: input.store,
 			message: msg,
-			out: rendered,
+			out,
 			skipFirst: true,
 			logger: input.logger,
 			context: context({ thread }),
 			delivery: input.delivery,
+			parseMode: mode,
+			allow: input.allow,
+			approvalConfig: input.approvalConfig,
+			callbackRegistry: input.callbackRegistry,
 		});
 	} catch (error) {
 		input.logger.error(
@@ -562,16 +1145,25 @@ async function sendTelegramOutput(input: {
 	logger: Logger;
 	context: Record<string, unknown>;
 	delivery: DeliveryQueue;
+	parseMode?: TelegramParseMode;
+	allow?: TelegramAllow;
+	approvalConfig?: ApprovalConfig;
+	callbackRegistry?: Map<string, Record<string, unknown>>;
 }): Promise<void> {
 	await sendChunks({
 		client: input.client,
 		message: input.message,
 		text: input.out.text,
 		approval: input.out.approval,
+		replyMarkup: input.out.replyMarkup,
 		skipFirst: input.skipFirst,
 		logger: input.logger,
 		context: input.context,
 		delivery: input.delivery,
+		parseMode: input.parseMode,
+		allow: input.allow,
+		approvalConfig: input.approvalConfig,
+		callbackRegistry: input.callbackRegistry,
 	});
 	await uploadTelegramAttachments({
 		client: input.client,
@@ -590,24 +1182,58 @@ async function sendChunks(input: {
 	message: TelegramMessage;
 	text: string;
 	approval?: Outbound["approval"];
+	replyMarkup?: Outbound["replyMarkup"];
 	skipFirst?: boolean;
 	logger?: Logger;
 	context?: Record<string, unknown>;
 	delivery: DeliveryQueue;
+	parseMode?: TelegramParseMode;
+	allow?: TelegramAllow;
+	approvalConfig?: ApprovalConfig;
+	callbackRegistry?: Map<string, Record<string, unknown>>;
 }): Promise<void> {
-	const chunks = telegramChunks(telegramApprovalText(input.text, input.approval), Boolean(input.approval));
+	const isDm = telegramDm(input.message);
+	const mode = input.parseMode ?? "plain";
+	const plan = telegramApprovalDisplayPlan({
+		text: input.text,
+		approval: input.approval,
+		isDm,
+	});
+	const chunks = chunkTelegramFormattedText(plan.visibleText, mode);
+	const customMarkup =
+		input.replyMarkup && input.callbackRegistry
+			? normalizeTelegramReplyMarkup(input.replyMarkup, input.callbackRegistry)
+			: undefined;
 	for (let index = input.skipFirst ? 1 : 0; index < chunks.length; index++) {
-		await input.delivery.run(
-			() =>
-				input.client.sendMessage({
-					chat_id: input.message.chat.id,
-					message_thread_id: input.message.message_thread_id,
-					text: chunks[index],
-					reply_to_message_id: input.message.message_id,
-					reply_markup: index === 0 && input.approval ? approvalMarkup(input.approval) : undefined,
-				}),
-			{ ...input.context, retry: "send" },
-		);
+		let markup = emptyMarkup();
+		if (index === 0) {
+			if (plan.showMarkup && input.approval) markup = approvalMarkup(input.approval);
+			else if (customMarkup) markup = customMarkup;
+		}
+		await sendTelegramChunk({
+			client: input.client,
+			chatId: input.message.chat.id,
+			threadId: input.message.message_thread_id,
+			replyTo: input.message.message_id,
+			chunk: chunks[index],
+			replyMarkup: markup,
+			logger: input.logger,
+			context: input.context,
+			delivery: input.delivery,
+		});
+	}
+	if (plan.groupApproval && input.approval) {
+		await dmTelegramApprovers({
+			client: input.client,
+			allow: input.allow,
+			approvalConfig: input.approvalConfig,
+			approval: input.approval,
+			text: input.text,
+			parseMode: mode,
+			logger: input.logger,
+			context: input.context,
+			delivery: input.delivery,
+		});
 	}
 }
 
@@ -620,19 +1246,172 @@ async function sendTargetChunks(input: {
 	logger?: Logger;
 	context?: Record<string, unknown>;
 	delivery: DeliveryQueue;
+	parseMode?: TelegramParseMode;
+	allow?: TelegramAllow;
+	approvalConfig?: ApprovalConfig;
 }): Promise<void> {
-	const chunks = telegramChunks(telegramApprovalText(input.text, input.approval), Boolean(input.approval));
+	const isDm = telegramDirectChat(input.chatId);
+	const mode = input.parseMode ?? "plain";
+	const plan = telegramApprovalDisplayPlan({
+		text: input.text,
+		approval: input.approval,
+		isDm,
+	});
+	const chunks = chunkTelegramFormattedText(plan.visibleText, mode);
 	for (let index = 0; index < chunks.length; index++) {
-		await input.delivery.run(
-			() =>
-				input.client.sendMessage({
-					chat_id: input.chatId,
-					message_thread_id: input.threadId,
-					text: chunks[index],
-					reply_markup: index === 0 && input.approval ? approvalMarkup(input.approval) : undefined,
-				}),
-			{ ...input.context, retry: "send" },
-		);
+		await sendTelegramChunk({
+			client: input.client,
+			chatId: input.chatId,
+			threadId: input.threadId,
+			chunk: chunks[index],
+			replyMarkup: index === 0 && plan.showMarkup && input.approval ? approvalMarkup(input.approval) : emptyMarkup(),
+			logger: input.logger,
+			context: input.context,
+			delivery: input.delivery,
+		});
+	}
+	if (plan.groupApproval && input.approval) {
+		await dmTelegramApprovers({
+			client: input.client,
+			allow: input.allow,
+			approvalConfig: input.approvalConfig,
+			approval: input.approval,
+			text: input.text,
+			parseMode: mode,
+			logger: input.logger,
+			context: input.context,
+			delivery: input.delivery,
+		});
+	}
+}
+
+async function sendTelegramChunk(input: {
+	client: TelegramClient;
+	chatId: number;
+	threadId?: number;
+	replyTo?: number;
+	chunk: TelegramTextChunk;
+	replyMarkup?: TelegramReplyMarkup;
+	logger?: Logger;
+	context?: Record<string, unknown>;
+	delivery: DeliveryQueue;
+}): Promise<void> {
+	await deliverTelegramFormattedText({
+		chunk: input.chunk,
+		delivery: input.delivery,
+		context: input.context ?? {},
+		retry: "send",
+		plainRetry: "send_plain",
+		deliver: (chunk) =>
+			input.client.sendMessage({
+				chat_id: input.chatId,
+				message_thread_id: input.threadId,
+				reply_to_message_id: input.replyTo,
+				text: chunk.text,
+				parse_mode: telegramParseModeApiValue(chunk.parseMode),
+				reply_markup: input.replyMarkup,
+			}),
+	});
+}
+
+async function editTelegramText(input: {
+	client: TelegramClient;
+	chatId: number;
+	messageId: number;
+	chunk: TelegramTextChunk;
+	replyMarkup?: TelegramReplyMarkup;
+	logger?: Logger;
+	context?: Record<string, unknown>;
+	delivery: DeliveryQueue;
+}): Promise<void> {
+	await deliverTelegramFormattedText({
+		chunk: input.chunk,
+		delivery: input.delivery,
+		context: input.context ?? {},
+		plainRetry: "edit_plain",
+		deliver: (chunk) =>
+			input.client.editMessageText({
+				chat_id: input.chatId,
+				message_id: input.messageId,
+				text: chunk.text,
+				parse_mode: telegramParseModeApiValue(chunk.parseMode),
+				reply_markup: input.replyMarkup,
+			}),
+	});
+}
+
+async function deliverTelegramFormattedText(input: {
+	chunk: TelegramTextChunk;
+	delivery: DeliveryQueue;
+	context: Record<string, unknown>;
+	retry?: "send";
+	plainRetry: "send_plain" | "edit_plain";
+	deliver: (chunk: TelegramTextChunk) => Promise<unknown>;
+}): Promise<void> {
+	const firstContext = input.retry ? { ...input.context, retry: input.retry } : input.context;
+	try {
+		await input.delivery.run(() => input.deliver(input.chunk), firstContext);
+	} catch (error) {
+		if (!telegramParseError(error) || input.chunk.parseMode === "plain") throw error;
+		await input.delivery.run(() => input.deliver(plainFallbackChunk(input.chunk)), {
+			...input.context,
+			retry: input.plainRetry,
+		});
+	}
+}
+
+function telegramParseError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+	return message.includes("parse") || message.includes("can't parse");
+}
+
+function resolveTelegramApproverUserIds(allow: TelegramAllow | undefined, approvers?: ActorPolicy): string[] {
+	const configured = actorUsers(approvers);
+	const allowedUsers = allow?.users?.map(String) ?? [];
+	if (configured.length) {
+		if (allowedUsers.length) return configured.filter((user) => allowedUsers.includes(user));
+		return configured;
+	}
+	return allowedUsers;
+}
+
+async function dmTelegramApprovers(input: {
+	client: TelegramClient;
+	allow?: TelegramAllow;
+	approvalConfig?: ApprovalConfig;
+	approval: NonNullable<Outbound["approval"]>;
+	text: string;
+	parseMode?: TelegramParseMode;
+	logger?: Logger;
+	context?: Record<string, unknown>;
+	delivery: DeliveryQueue;
+}): Promise<void> {
+	const recipients = resolveTelegramApproverUserIds(input.allow, input.approvalConfig?.approvers);
+	if (!recipients.length) {
+		input.logger?.warn("telegram.approval_dm_recipients_missing", input.context);
+		return;
+	}
+	const mode = input.parseMode ?? "plain";
+	const body = telegramApprovalText(input.text, input.approval);
+	const chunk = chunkTelegramFormattedText(body, mode)[0] ?? { text: body, parseMode: mode };
+	for (const userId of recipients) {
+		try {
+			await sendTelegramChunk({
+				client: input.client,
+				chatId: Number(userId),
+				chunk,
+				replyMarkup: approvalMarkup(input.approval),
+				logger: input.logger,
+				context: { ...input.context, approvalDm: userId },
+				delivery: input.delivery,
+			});
+		} catch (error) {
+			input.logger?.error("telegram.approval_dm_failed", {
+				...input.context,
+				userId,
+				error: errorMessage(error),
+			});
+		}
 	}
 }
 
@@ -694,11 +1473,57 @@ function telegramProgress(input: TelegramConfig["progress"], streaming: boolean)
 	return input ?? { delayMs: 0 };
 }
 
+async function sendTelegramNotice(input: {
+	client: TelegramClient;
+	message: TelegramMessage;
+	text: string;
+	logger?: Logger;
+	context?: Record<string, unknown>;
+	delivery: DeliveryQueue;
+	parseMode?: TelegramParseMode;
+}): Promise<void> {
+	await sendChunks({
+		client: input.client,
+		message: input.message,
+		text: input.text,
+		logger: input.logger,
+		context: input.context,
+		delivery: input.delivery,
+		parseMode: input.parseMode,
+	});
+}
+
 async function uploadTelegramAttachments(input: {
 	client: TelegramClient;
 	store?: AttachmentStore;
 	message: TelegramMessage;
 	attachments?: Array<{ path: string; name?: string; mimeType?: string }>;
+	scope?: ScopedKey;
+	logger: Logger;
+	context: Record<string, unknown>;
+	delivery: DeliveryQueue;
+}): Promise<void> {
+	await deliverTelegramAttachments({
+		client: input.client,
+		store: input.store,
+		chatId: input.message.chat.id,
+		threadId: input.message.message_thread_id,
+		replyTo: input.message.message_id,
+		attachments: input.attachments,
+		scope: input.scope,
+		logger: input.logger,
+		context: input.context,
+		delivery: input.delivery,
+	});
+}
+
+async function deliverTelegramAttachments(input: {
+	client: TelegramClient;
+	store?: AttachmentStore;
+	chatId: number;
+	threadId?: number;
+	replyTo?: number;
+	attachments?: ReplyAttachment[];
 	scope?: ScopedKey;
 	logger: Logger;
 	context: Record<string, unknown>;
@@ -717,12 +1542,19 @@ async function uploadTelegramAttachments(input: {
 		try {
 			await input.delivery.run(
 				() =>
-					input.client.sendDocument({
-						chat_id: input.message.chat.id,
-						message_thread_id: input.message.message_thread_id,
-						reply_to_message_id: input.message.message_id,
-						document: file,
-					}),
+					isTelegramImageMime(file.mimeType, file.name)
+						? input.client.sendPhoto({
+								chat_id: input.chatId,
+								message_thread_id: input.threadId,
+								reply_to_message_id: input.replyTo,
+								photo: file,
+							})
+						: input.client.sendDocument({
+								chat_id: input.chatId,
+								message_thread_id: input.threadId,
+								reply_to_message_id: input.replyTo,
+								document: file,
+							}),
 				{ ...input.context, retry: "send" },
 			);
 		} catch (error) {
@@ -738,6 +1570,9 @@ function startProgress(input: {
 	replyTo: number;
 	cancelId: string;
 	progress?: TelegramProgress;
+	isDm: boolean;
+	allow?: TelegramAllow;
+	approvalConfig?: ApprovalConfig;
 	logger: Logger;
 	context: Record<string, unknown>;
 	delivery: DeliveryQueue;
@@ -806,23 +1641,43 @@ function startProgress(input: {
 					});
 				});
 		},
-		async update(out: Outbound): Promise<boolean> {
+		async update(out: Outbound, parseMode?: TelegramParseMode): Promise<boolean> {
 			active = false;
 			await task;
 			if (!placeholder) return false;
 			const messageId = placeholder;
 			placeholder = undefined;
+			const mode = parseMode ?? "plain";
+			const plan = telegramApprovalDisplayPlan({
+				text: out.text,
+				approval: out.approval,
+				approvalResolution: out.approvalResolution,
+				isDm: input.isDm,
+			});
 			try {
-				await input.delivery.run(
-					() =>
-						input.client.editMessageText({
-							chat_id: input.chatId,
-							message_id: messageId,
-							text: firstChunk(telegramApprovalText(out.text, out.approval), Boolean(out.approval)),
-							reply_markup: out.approval ? approvalMarkup(out.approval) : undefined,
-						}),
-					{ ...input.context, delivery: "progress_update" },
-				);
+				await editTelegramText({
+					client: input.client,
+					chatId: input.chatId,
+					messageId,
+					chunk: firstFormattedChunk(plan.visibleText, plan.showMarkup, mode),
+					replyMarkup: plan.showMarkup && out.approval ? approvalMarkup(out.approval) : emptyMarkup(),
+					logger: input.logger,
+					context: { ...input.context, delivery: "progress_update" },
+					delivery: input.delivery,
+				});
+				if (plan.groupApproval && out.approval) {
+					await dmTelegramApprovers({
+						client: input.client,
+						allow: input.allow,
+						approvalConfig: input.approvalConfig,
+						approval: out.approval,
+						text: out.text,
+						parseMode: mode,
+						logger: input.logger,
+						context: { ...input.context, delivery: "progress_update" },
+						delivery: input.delivery,
+					});
+				}
 				return true;
 			} catch (error) {
 				input.logger.warn("telegram.progress.update_failed", { ...input.context, error: errorMessage(error) });
@@ -889,6 +1744,31 @@ function telegramDm(msg: TelegramMessage): boolean {
 	return msg.chat.type === "private";
 }
 
+/** True for private Telegram chats (positive chat id). */
+export function telegramDirectChat(chatId: number): boolean {
+	return chatId > 0;
+}
+
+export function telegramApprovalDisplayPlan(input: {
+	text: string;
+	approval?: Outbound["approval"];
+	approvalResolution?: Outbound["approvalResolution"];
+	actor?: string;
+	isDm: boolean;
+}): { groupApproval: boolean; visibleText: string; showMarkup: boolean } {
+	const groupApproval = Boolean(input.approval && !input.isDm);
+	let visibleText: string;
+	if (groupApproval) {
+		visibleText = input.approvalResolution
+			? redactedApprovalResolvedText(input.approvalResolution, input.actor)
+			: redactedApprovalPendingText();
+	} else {
+		visibleText = telegramApprovalText(input.text, input.approval, input.approvalResolution, input.actor);
+	}
+	const showMarkup = Boolean(input.approval && input.isDm && !input.approvalResolution);
+	return { groupApproval, visibleText, showMarkup };
+}
+
 export function telegramAllowed(
 	allow: TelegramAllow | undefined,
 	event: { chat: string; user: string; isDm: boolean },
@@ -937,7 +1817,8 @@ function stripTelegramMention(text: string, username?: string): string {
 }
 
 function actionText(action: TelegramAction): string {
-	if (action.kind === STATUS) return "status";
+	if (action.kind === "status") return "status";
+	if (action.kind === "custom") return `callback ${action.token}`;
 	return `${action.kind} ${action.id}`;
 }
 
@@ -952,16 +1833,28 @@ function telegramResolvedApprovalText(
 	return out.text;
 }
 
+function telegramVisibleResolvedText(
+	out: Outbound,
+	state: Outbound["approvalResolution"],
+	actor?: string,
+	original?: string,
+	isDm = true,
+): string {
+	if (state && !isDm) return redactedApprovalResolvedText(state, actor);
+	return telegramResolvedApprovalText(out, state, actor, original);
+}
+
+function firstFormattedChunk(text: string, hasMarkup: boolean, mode: TelegramParseMode = "plain"): TelegramTextChunk {
+	const chunks = chunkTelegramFormattedText(text, hasMarkup && mode !== "plain" ? mode : "plain");
+	return chunks[0] ?? { text: formatTelegramText(text, mode), parseMode: mode };
+}
+
 function telegramActor(user: TelegramUser): string {
 	return user.username ? `@${user.username}` : `user ${user.id}`;
 }
 
 export function telegramChunks(text: string, hasMarkup = false): string[] {
 	return chunkText(text, hasMarkup ? 3800 : TELEGRAM_TEXT_LIMIT);
-}
-
-function firstChunk(text: string, hasMarkup: boolean): string {
-	return telegramChunks(text, hasMarkup)[0] ?? "";
 }
 
 export function telegramApprovalText(
@@ -972,25 +1865,17 @@ export function telegramApprovalText(
 ): string {
 	if (!approval) return text;
 	return [
-		approvalTitleText(state),
+		`*${approvalStateTitle(state)}*`,
 		approval.reason ? ["Reason:", approval.reason].join("\n") : undefined,
 		...(approval.details ?? []).map((detail) =>
 			[`${detail.label}:`, detail.format === "code" ? codeFence(detail.value) : detail.value].join("\n"),
 		),
 		`Approval ID: ${approval.id}`,
 		approval.requestedBy ? `Requested by: ${approval.requestedBy}` : undefined,
-		state ? approvalResolutionText(state, actor) : undefined,
+		state ? approvalStateLine(state, actor) : undefined,
 	]
 		.filter((line): line is string => typeof line === "string")
 		.join("\n\n");
-}
-
-function approvalResolutionText(state: NonNullable<Outbound["approvalResolution"]>, actor?: string): string {
-	return approvalStateLine(state, actor);
-}
-
-function approvalTitleText(state?: Outbound["approvalResolution"]): string {
-	return `*${approvalStateTitle(state)}*`;
 }
 
 function progressMarkup(id: string): TelegramReplyMarkup {
@@ -1023,22 +1908,74 @@ type TelegramAction =
 	| { kind: "approve"; id: string }
 	| { kind: "deny"; id: string }
 	| { kind: "cancel"; id: string }
-	| { kind: "status" };
+	| { kind: "status" }
+	| { kind: "custom"; token: string };
 
 export function parseTelegramCallback(input?: string): TelegramAction | undefined {
 	if (!input) return undefined;
-	if (input === STATUS) return { kind: STATUS };
-	const index = input.indexOf(":");
-	if (index <= 0) return undefined;
-	const kind = input.slice(0, index);
-	const id = input.slice(index + 1);
+	if (input === STATUS) return { kind: "status" };
+	if (!input.startsWith(`${HEYPI_PREFIX}:`)) return undefined;
+	const rest = input.slice(HEYPI_PREFIX.length + 1);
+	const index = rest.indexOf(":");
+	if (index < 0) return undefined;
+	const kind = rest.slice(0, index);
+	const id = rest.slice(index + 1);
 	if (!id) return undefined;
-	if (kind === APPROVE || kind === DENY || kind === CANCEL) return { kind, id };
+	if (kind === "approve" || kind === "deny" || kind === "cancel") return { kind, id };
+	if (kind === "custom") return { kind: "custom", token: id };
 	return undefined;
+}
+
+function normalizeTelegramReplyMarkup(
+	markup: Record<string, unknown>,
+	registry: Map<string, Record<string, unknown>>,
+): TelegramReplyMarkup {
+	const rows = markup.inline_keyboard;
+	if (!Array.isArray(rows)) throw new Error("Telegram replyMarkup requires inline_keyboard");
+	const inline_keyboard = rows.map((row) => {
+		if (!Array.isArray(row)) throw new Error("Telegram inline_keyboard rows must be arrays");
+		return row.map((button) => {
+			if (!button || typeof button !== "object")
+				throw new Error("Telegram inline keyboard button must be an object");
+			const record = button as { text?: string; callback_data?: string };
+			if (!record.text || !record.callback_data) {
+				throw new Error("Telegram inline keyboard button requires text and callback_data");
+			}
+			if (record.callback_data.startsWith(`${HEYPI_PREFIX}:`) && !record.callback_data.startsWith(`${CUSTOM}:`)) {
+				throw new Error(`Telegram callback_data uses reserved prefix: ${record.callback_data}`);
+			}
+			let callback_data = record.callback_data;
+			const customToken = callback_data.startsWith(`${CUSTOM}:`);
+			const heypiReserved = callback_data.startsWith(`${HEYPI_PREFIX}:`);
+			if (!customToken && (callback_data.length > TELEGRAM_CALLBACK_DATA_LIMIT || !heypiReserved)) {
+				const token = randomBytes(8).toString("hex");
+				registry.set(token, { callback_data });
+				callback_data = `${CUSTOM}:${token}`;
+			}
+			return { text: record.text, callback_data };
+		});
+	});
+	return { inline_keyboard };
 }
 
 function filesOf(msg: TelegramMessage): Array<{ id: string; name: string; mimeType?: string; size?: number }> {
 	const out: Array<{ id: string; name: string; mimeType?: string; size?: number }> = [];
+	if (msg.voice) {
+		out.push({
+			id: msg.voice.file_id,
+			name: `${msg.voice.file_unique_id ?? msg.voice.file_id}.ogg`,
+			mimeType: msg.voice.mime_type ?? "audio/ogg",
+			size: msg.voice.file_size,
+		});
+	}
+	if (msg.audio) {
+		out.push({
+			id: msg.audio.file_id,
+			name: msg.audio.file_name ?? `${msg.audio.file_unique_id ?? msg.audio.file_id}.mp3`,
+			mimeType: msg.audio.mime_type ?? "audio/mpeg",
+			size: msg.audio.file_size,
+		});
+	}
 	if (msg.document) {
 		out.push({
 			id: msg.document.file_id,
@@ -1078,9 +2015,27 @@ class TelegramClient {
 		this.base = `${telegramApiUrl(apiUrl).replace(/\/+$/, "")}/bot${token}`;
 	}
 
-	async getUpdates(input: { offset: number; timeout: number }): Promise<TelegramUpdate[]> {
+	async getUpdates(input: { offset: number; timeout: number; allowed_updates?: string[] }): Promise<TelegramUpdate[]> {
 		const out = await this.call<{ result: TelegramUpdate[] }>("getUpdates", input);
 		return out.result;
+	}
+
+	async setWebhook(input: { url: string; secret_token: string; allowed_updates: string[] }): Promise<void> {
+		await this.call("setWebhook", input);
+	}
+
+	async deleteWebhook(): Promise<void> {
+		await this.call("deleteWebhook", {});
+	}
+
+	async sendPoll(input: {
+		chat_id: number;
+		message_thread_id?: number;
+		question: string;
+		options: string[];
+		is_anonymous?: boolean;
+	}): Promise<void> {
+		await this.call("sendPoll", compact(input));
 	}
 
 	async getMe(): Promise<TelegramUser> {
@@ -1132,6 +2087,21 @@ class TelegramClient {
 		await this.callForm("sendDocument", form);
 	}
 
+	async sendPhoto(input: {
+		chat_id: number;
+		message_thread_id?: number;
+		reply_to_message_id?: number;
+		photo: ResolvedAttachment;
+	}): Promise<void> {
+		const form = new FormData();
+		const data = await readFile(input.photo.path);
+		form.set("chat_id", String(input.chat_id));
+		if (input.message_thread_id !== undefined) form.set("message_thread_id", String(input.message_thread_id));
+		if (input.reply_to_message_id !== undefined) form.set("reply_to_message_id", String(input.reply_to_message_id));
+		form.set("photo", new Blob([data], { type: input.photo.mimeType }), input.photo.name);
+		await this.callForm("sendPhoto", form);
+	}
+
 	private get baseFile(): string {
 		const root = this.base.slice(0, this.base.indexOf(`/bot${this.token}`));
 		return `${root}/file/bot${this.token}`;
@@ -1178,7 +2148,17 @@ type TelegramResponse<T> = T & { ok?: boolean; description?: string; parameters?
 type TelegramUpdate = {
 	update_id: number;
 	message?: TelegramMessage;
+	edited_message?: TelegramMessage;
 	callback_query?: TelegramCallbackQuery;
+	my_chat_member?: TelegramChatMemberUpdate;
+	chat_member?: TelegramChatMemberUpdate;
+};
+
+type TelegramChatMemberUpdate = {
+	chat: { id: number; type?: string; title?: string };
+	from?: TelegramUser;
+	new_chat_member?: TelegramUser & { is_bot?: boolean };
+	old_chat_member?: TelegramUser & { is_bot?: boolean };
 };
 
 type TelegramCallbackQuery = {
@@ -1202,6 +2182,21 @@ type TelegramMessage = {
 	chat: { id: number; type?: string; title?: string; username?: string; first_name?: string };
 	text?: string;
 	caption?: string;
+	voice?: {
+		file_id: string;
+		file_unique_id?: string;
+		mime_type?: string;
+		file_size?: number;
+		duration?: number;
+	};
+	audio?: {
+		file_id: string;
+		file_unique_id?: string;
+		file_name?: string;
+		mime_type?: string;
+		file_size?: number;
+		duration?: number;
+	};
 	document?: {
 		file_id: string;
 		file_name?: string;
@@ -1213,6 +2208,8 @@ type TelegramMessage = {
 		file_unique_id?: string;
 		file_size?: number;
 	}>;
+	sticker?: { file_id: string };
+	location?: { latitude: number; longitude: number };
 };
 
 function telegramUserName(user: TelegramUser | undefined): string | undefined {
@@ -1233,6 +2230,7 @@ type TelegramSendMessage = {
 	message_thread_id?: number;
 	reply_to_message_id?: number;
 	text: string;
+	parse_mode?: string;
 	reply_markup?: TelegramReplyMarkup;
 };
 
@@ -1240,6 +2238,7 @@ type TelegramEditMessageText = {
 	chat_id: number;
 	message_id: number;
 	text: string;
+	parse_mode?: string;
 	reply_markup?: TelegramReplyMarkup;
 };
 
@@ -1248,3 +2247,5 @@ type TelegramAnswerCallbackQuery = {
 	text?: string;
 	show_alert?: boolean;
 };
+
+export { deliverTelegramAttachments as telegramDeliverAttachments };

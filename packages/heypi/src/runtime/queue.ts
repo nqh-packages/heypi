@@ -15,6 +15,10 @@ export class Queue {
 
 	constructor(private readonly options: { maxConcurrent?: number; maxPerChat?: number }) {}
 
+	pendingDepth(): number {
+		return this.pending.length;
+	}
+
 	submit<T>(chat: string, execute: () => Promise<T>, signal?: AbortSignal): Promise<{ result: T; waitMs: number }> {
 		return new Promise((resolve, reject) => {
 			if (signal?.aborted) {

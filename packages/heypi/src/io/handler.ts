@@ -50,6 +50,12 @@ export type RuntimeProgress = {
 	update(text: string): Promise<void> | void;
 };
 
+export type OutboundPoll = {
+	question: string;
+	options: string[];
+	isAnonymous?: boolean;
+};
+
 export type Outbound = {
 	text: string;
 	private?: boolean;
@@ -60,6 +66,9 @@ export type Outbound = {
 	attachments?: ReplyAttachment[];
 	attachmentScope?: ScopedKey;
 	finalPlacement?: "progress" | "thread";
+	/** Telegram inline keyboard JSON; callback_data must not use reserved heypi: prefixes. */
+	replyMarkup?: Record<string, unknown>;
+	poll?: OutboundPoll;
 };
 
 export type Handler = ((input: Inbound) => Promise<Outbound | undefined>) & {

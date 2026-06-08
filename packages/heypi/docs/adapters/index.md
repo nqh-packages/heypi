@@ -20,6 +20,7 @@ After that, adapter config decides which events become turns:
 - `allow.users` and `allow.groups` match actor access where the provider supports groups.
 - `allow.channels`, `allow.chats`, or webhook channel values match the conversation.
 - `allow.dms` controls direct messages separately from channel/chat allowlists.
+- Callback and interactive button handlers enforce the same allow dimensions as inbound messages on Telegram, Slack, and Discord before invoking handlers.
 - Channels and groups default to `trigger: "mention"`; DMs run accepted messages directly.
 - Threads, topics, and replies default to `threadTrigger: "message"` once a turn has been created in that thread.
 - `streaming: true` enables draft edits where supported.

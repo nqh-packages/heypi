@@ -65,6 +65,16 @@ export function approvalStateLine(state: ApprovalResolution, actor?: string): st
 	return "Approval expired.";
 }
 
+/** Group-visible pending approval stub without sensitive metadata. */
+export function redactedApprovalPendingText(): string {
+	return "Approval pending — check your DM for details.\n\nDM the bot with /start if you don't receive approval prompts.";
+}
+
+/** Group-visible resolved approval summary without IDs, commands, or reasons. */
+export function redactedApprovalResolvedText(state: ApprovalResolution, actor?: string): string {
+	return approvalStateLine(state, actor);
+}
+
 function escapeCodeFence(value: string): string {
 	return value.replaceAll("```", "`\u200b``");
 }

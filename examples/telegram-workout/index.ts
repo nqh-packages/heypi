@@ -124,6 +124,7 @@ const app = createHeypi({
 			allow: { chats: list("HEYPI_TELEGRAM_CHATS"), users: list("HEYPI_TELEGRAM_USERS") },
 			trigger: "mention",
 			streaming: true,
+			parseMode: "plain",
 		}),
 	],
 	agent: agentFrom("./agent", {

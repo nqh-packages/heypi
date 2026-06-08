@@ -3,10 +3,18 @@
 ## [Unreleased]
 
 ### Added
+- Telegram agent-complete parity (v1): callback allow enforcement across Telegram, Slack, and Discord; group-visible approval redaction with DM full UI; configurable Telegram parse modes and markup-safe chunking with plain-text fallback.
+- Local opt-in voice transcription for Telegram via whisper.cpp and ffmpeg with bounded non-blocking STT queue, photo-only inbound context, outbound sendPhoto/sendDocument, and scheduled attachment delivery.
+- Telegram CLI `setup-commands` and richer `observe` output with copy-paste allowlist snippets.
+- Telegram P2/P3 parity: optional Bot API webhook ingress, namespaced callbacks with custom reply markup, opt-in group automation (welcome, flood, link, spam, edited messages), polls/location/unsupported-type handling, and `examples/telegram-alerts`.
+- Slack and Discord shared-channel approval redaction with approver-only full UI (ephemeral/DM).
 - Added a Telegram co-founder example with Markdown-backed company memory, tasks, reports, selected skill handoffs, prompt guardrails, and deterministic transcript tests.
 - Added explicit trusted workspace roots for Telegram co-founder engineering handoffs.
 
 ### Fixed
+- Telegram group approval redaction now covers progress placeholder updates and scheduled `adapter.send` paths; approver DMs follow the same plan as inline replies.
+- Telegram webhook ingress awaits update handling before ACK, and graceful adapter stop no longer deletes the Bot API webhook (avoids deploy handoff races).
+- Telegram custom callback_data overflow now uses the 64-byte Bot API limit instead of the 200-character callback answer limit.
 - Wired Telegram co-founder trusted allowlists into mutating tool access and gated route-created task handoffs.
 - Prevented untrusted Telegram co-founder engineering handoffs from writing artifacts before access checks.
 - Enabled Telegram co-founder local dev restarts to replace old same-host app locks.

@@ -19,6 +19,7 @@
 		"dev:discord": "cd examples/discord-gondolin && tsx watch --conditions development index.ts",
 		"dev:telegram": "cd examples/telegram-workout && tsx watch --conditions development index.ts",
 		"dev:telegram:cofounder": "cd examples/telegram-cofounder && tsx watch --conditions development index.ts",
+		"dev:telegram:alerts": "cd examples/telegram-alerts && tsx watch --conditions development index.ts",
 		"dev:webhook": "cd examples/webhook-github-docker && tsx watch --conditions development index.ts",
 		"start:slack": "cd examples/slack-devops && tsx --conditions development index.ts",
 		"start:discord": "cd examples/discord-gondolin && tsx --conditions development index.ts",
