@@ -249,12 +249,11 @@ export function telegram(input: TelegramConfig): Adapter {
 				approvalConfig: start?.approval,
 			});
 			if (out.poll) {
-				await client.sendPoll({
-					chat_id: chatId,
-					message_thread_id: threadId,
-					question: out.poll.question,
-					options: out.poll.options,
-					is_anonymous: out.poll.isAnonymous,
+				await sendTelegramPoll({
+					client,
+					chatId,
+					threadId,
+					poll: out.poll,
 				});
 			}
 			if (out.attachments?.length) {
@@ -1196,6 +1195,14 @@ async function sendTelegramOutput(input: {
 		approvalConfig: input.approvalConfig,
 		callbackRegistry: input.callbackRegistry,
 	});
+	if (input.out.poll) {
+		await sendTelegramPoll({
+			client: input.client,
+			chatId: input.message.chat.id,
+			threadId: input.message.message_thread_id,
+			poll: input.out.poll,
+		});
+	}
 	await uploadTelegramAttachments({
 		client: input.client,
 		store: input.store,
@@ -1205,6 +1212,21 @@ async function sendTelegramOutput(input: {
 		logger: input.logger,
 		context: input.context,
 		delivery: input.delivery,
+	});
+}
+
+async function sendTelegramPoll(input: {
+	client: TelegramClient;
+	chatId: number;
+	threadId?: number;
+	poll: NonNullable<Outbound["poll"]>;
+}): Promise<void> {
+	await input.client.sendPoll({
+		chat_id: input.chatId,
+		message_thread_id: input.threadId,
+		question: input.poll.question,
+		options: input.poll.options,
+		is_anonymous: input.poll.isAnonymous,
 	});
 }
 

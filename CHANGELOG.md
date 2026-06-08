@@ -13,6 +13,7 @@
 
 ### Fixed
 - Telegram voice STT now resolves runtime-scoped attachment paths before calling ffmpeg/whisper, fixing transcription on host runtimes like `guarded-bash`.
+- Telegram inbound and callback replies now send `Outbound.poll` payloads, matching scheduled `adapter.send` behavior.
 - Telegram runtime hardening: STT supersede only on voice/audio, bounded callback token registry with post-use eviction, moderation map pruning, and cached ffmpeg/whisper discovery.
 - Telegram group approval redaction now covers progress placeholder updates and scheduled `adapter.send` paths; approver DMs follow the same plan as inline replies.
 - Telegram webhook ingress awaits update handling before ACK, and graceful adapter stop no longer deletes the Bot API webhook (avoids deploy handoff races).

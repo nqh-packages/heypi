@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { redactedApprovalPendingText } from "../src/core/approval-view.js";
+import type { Logger } from "../src/core/log.js";
+import type { AppMessages } from "../src/core/messages.js";
+import { DeliveryQueue } from "../src/io/delivery.js";
+import { BoundedQueue } from "../src/io/stt/queue.js";
 import {
+	handleTelegramUpdate,
 	isTelegramImageMime,
 	parseTelegramCallback,
 	resolveTelegramInboundText,
@@ -15,6 +20,15 @@ import {
 	telegramTriggered,
 	telegramVoiceOrAudio,
 } from "../src/io/telegram.js";
+
+const noopLogger: Logger = {
+	debug: () => undefined,
+	info: () => undefined,
+	warn: () => undefined,
+	error: () => undefined,
+};
+
+const testMessages = { error: "error" } as AppMessages;
 
 test("parseTelegramCallback parses namespaced control actions", () => {
 	assert.deepEqual(parseTelegramCallback("heypi:approve:abc"), { kind: "approve", id: "abc" });
@@ -120,4 +134,69 @@ test("telegramApprovalDisplayPlan redacts pending approvals in groups", () => {
 	});
 	assert.equal(resolved.visibleText, "Approved by user 42.");
 	assert.equal(resolved.showMarkup, false);
+});
+
+test("inbound handler reply sends poll after text", async () => {
+	const sent: string[] = [];
+	const polls: Array<Record<string, unknown>> = [];
+	const client = {
+		sendMessage: async (input: { text: string }) => {
+			sent.push(input.text);
+			return { message_id: 99 };
+		},
+		editMessageText: async () => undefined,
+		deleteMessage: async () => undefined,
+		answerCallbackQuery: async () => undefined,
+		sendPoll: async (input: Record<string, unknown>) => {
+			polls.push(input);
+		},
+		getFile: async () => ({ file_path: "file" }),
+		downloadFile: async () => new Uint8Array(),
+		sendPhoto: async () => undefined,
+		sendDocument: async () => undefined,
+	} as never;
+	await handleTelegramUpdate({
+		client,
+		start: {
+			handler: async () => ({
+				text: "Pick one",
+				poll: { question: "Lunch?", options: ["Pizza", "Salad"], isAnonymous: true },
+			}),
+			logger: noopLogger,
+			messages: testMessages,
+		},
+		config: { token: "t", trigger: "message", progress: false as const },
+		delivery: new DeliveryQueue(false),
+		provider: "telegram",
+		kind: "telegram",
+		update: {
+			update_id: 1,
+			message: {
+				message_id: 1,
+				from: { id: 42, is_bot: false },
+				chat: { id: 42, type: "private" },
+				text: "poll me",
+			},
+		},
+		stopped: () => false,
+		sttState: {
+			queue: new BoundedQueue({ maxConcurrent: 2, maxPerChat: 1, maxPending: 32 }),
+			generations: new Map(),
+			abortControllers: new Map(),
+		},
+		moderationState: {
+			flood: new Map(),
+			spam: new Map(),
+		},
+		callbackRegistry: new Map(),
+	});
+	assert.deepEqual(sent, ["Pick one"]);
+	assert.equal(polls.length, 1);
+	assert.deepEqual(polls[0], {
+		chat_id: 42,
+		message_thread_id: undefined,
+		question: "Lunch?",
+		options: ["Pizza", "Salad"],
+		is_anonymous: true,
+	});
 });
