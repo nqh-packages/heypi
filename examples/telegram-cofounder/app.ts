@@ -39,6 +39,11 @@ export function telegramUsers(env: Env = process.env): string[] {
 	return listEnv({ HEYPI_TELEGRAM_USERS: raw }, "HEYPI_TELEGRAM_USERS");
 }
 
+export function telegramSttModelPath(env: Env = process.env): string | undefined {
+	const raw = env === process.env ? process.env.HEYPI_STT_MODEL_PATH : env.HEYPI_STT_MODEL_PATH;
+	return raw?.trim() || undefined;
+}
+
 export function devAppLock(env: Env = process.env): HeypiConfig["appLock"] {
 	const appEnv = env === process.env ? process.env.APP_ENV : env.APP_ENV;
 	const localDev = env === process.env ? process.env.HEYPI_LOCAL_DEV_MUTATIONS : env.HEYPI_LOCAL_DEV_MUTATIONS;
@@ -76,6 +81,7 @@ export function createTelegramCofounderConfig(
 	env: Env = process.env,
 	toolOptions: ToolFactoryOptions = {},
 ): HeypiConfig {
+	const sttModelPath = telegramSttModelPath(env);
 	return {
 		state: { root: STATE_ROOT },
 		adapters: [
@@ -88,6 +94,7 @@ export function createTelegramCofounderConfig(
 				},
 				trigger: "message",
 				streaming: true,
+				stt: sttModelPath ? { enabled: true, local: { modelPath: sttModelPath } } : undefined,
 			}),
 		],
 		agent: agentFrom("./agent", {

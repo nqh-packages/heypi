@@ -40,6 +40,16 @@ HEYPI_RUNTIME_ROOT=/Volumes/BIWIN/CODES/company-runner
 HEYPI_TRUSTED_WORKSPACE_ROOTS=/Volumes/BIWIN/CODES
 ```
 
+Voice notes require local STT on the host:
+
+```bash
+brew install ffmpeg whisper-cpp
+mkdir -p "$HOME/.cache/heypi/models"
+curl -L -o "$HOME/.cache/heypi/models/ggml-base.en.bin" \
+  "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
+HEYPI_STT_MODEL_PATH=$HOME/.cache/heypi/models/ggml-base.en.bin
+```
+
 ## Selected features
 
 - Co-founder voice and action-grounded replies.

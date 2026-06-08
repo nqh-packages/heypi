@@ -13,8 +13,14 @@ import {
 	Partials,
 	type TextBasedChannel,
 } from "discord.js";
-import { approvalStateTitle, codeFence } from "../core/approval-view.js";
-import { actorGroups as configuredGroups } from "../core/approvers.js";
+import type { ApprovalConfig } from "../config.js";
+import {
+	approvalStateTitle,
+	codeFence,
+	redactedApprovalPendingText,
+	redactedApprovalResolvedText,
+} from "../core/approval-view.js";
+import { actorUsers, actorGroups as configuredGroups } from "../core/approvers.js";
 import { message as errorMessage, type Logger, userError } from "../core/log.js";
 import type { ScopedKey } from "../core/scope.js";
 import type { ApprovalResolution } from "../core/types.js";
@@ -23,7 +29,7 @@ import { resolveOutboundAttachments, saveInboundAttachments } from "./attachment
 import { type Attachment, type AttachmentStore, responseBytes } from "./attachments.js";
 import { runChatMessage } from "./chat-message.js";
 import { type DeliveryConfig, DeliveryQueue } from "./delivery.js";
-import { allowByDimensions, messageTriggered } from "./gate.js";
+import { allowByDimensions, inboundAllowed, messageTriggered } from "./gate.js";
 import type { Adapter, AdapterStart, AdapterTarget, Outbound } from "./handler.js";
 import { logCtx } from "./log-context.js";
 import { DraftReplyStream, type ReplyStreamOption } from "./reply-stream.js";
@@ -97,7 +103,15 @@ export function discord(input: DiscordConfig): Adapter {
 				void handleMessage({ client, start, config: input, delivery, provider: name, kind, groups, msg });
 			});
 			client.on(Events.InteractionCreate, (interaction) => {
-				void handleInteraction({ start, delivery, provider: name, kind, groups, interaction });
+				void handleDiscordInteraction({
+					start,
+					delivery,
+					provider: name,
+					kind,
+					groups,
+					interaction,
+					allow: input.allow,
+				});
 			});
 			await client.login(input.token);
 		},
@@ -242,6 +256,8 @@ async function handleMessage(input: {
 					logger: input.start.logger,
 					context: context(),
 					delivery: input.delivery,
+					allow: input.config.allow,
+					approvalConfig: input.start.approval,
 				});
 			},
 			streamed: async (out) => {
@@ -267,6 +283,8 @@ async function handleMessage(input: {
 					logger: input.start.logger,
 					context: context(),
 					delivery: input.delivery,
+					allow: input.config.allow,
+					approvalConfig: input.start.approval,
 				});
 			},
 		},
@@ -285,13 +303,14 @@ async function handleMessage(input: {
 	});
 }
 
-async function handleInteraction(input: {
+export async function handleDiscordInteraction(input: {
 	start: AdapterStart;
 	delivery: DeliveryQueue;
 	provider: string;
 	kind: string;
 	groups: DiscordGroupResolver;
 	interaction: Interaction;
+	allow?: DiscordAllow;
 }): Promise<void> {
 	if (!input.interaction.isButton()) return;
 	const interaction = input.interaction;
@@ -304,6 +323,32 @@ async function handleInteraction(input: {
 	const actorGroups = await input.groups.forInteraction(interaction);
 	const context = (extra?: Record<string, unknown>) =>
 		logCtx({ trace, adapter: input.provider, kind: input.kind, channel }, extra);
+	const allow = inboundAllowed(
+		(ctx) =>
+			discordAllowed(input.allow, {
+				channel: ctx.channel,
+				user: ctx.actor,
+				groups: ctx.groups,
+				isDm: ctx.isDm,
+			}),
+		{
+			channel,
+			actor,
+			groups: actorGroups,
+			isDm: interaction.channel?.type === ChannelType.DM,
+		},
+	);
+	if (!allow.ok) {
+		input.start.logger.debug(
+			"adapter.drop",
+			context({
+				actor,
+				reason: allow.reason,
+			}),
+		);
+		await interaction.reply({ content: "Not allowed", ephemeral: true }).catch(() => undefined);
+		return;
+	}
 	let acknowledged = false;
 	const acknowledge = async (out: Outbound) => {
 		const embed = approvalEmbedForAction(out, out.approvalResolution ?? "approved", actor, interaction.message);
@@ -444,6 +489,8 @@ async function sendDiscordOutput(input: {
 	logger: Logger;
 	context: Record<string, unknown>;
 	delivery: DeliveryQueue;
+	allow?: DiscordAllow;
+	approvalConfig?: ApprovalConfig;
 }): Promise<void> {
 	await sendTextChunks({
 		channel: input.channel,
@@ -453,6 +500,8 @@ async function sendDiscordOutput(input: {
 		skipFirst: input.skipFirst,
 		context: input.context,
 		delivery: input.delivery,
+		allow: input.allow,
+		approvalConfig: input.approvalConfig,
 	});
 	await uploadDiscordAttachments({
 		channel: input.channel,
@@ -473,7 +522,31 @@ async function sendTextChunks(input: {
 	skipFirst?: boolean;
 	context: Record<string, unknown>;
 	delivery: DeliveryQueue;
+	allow?: DiscordAllow;
+	approvalConfig?: ApprovalConfig;
 }): Promise<void> {
+	const isDm = input.channel.type === ChannelType.DM;
+	const groupApproval = Boolean(input.approval && !isDm);
+	if (groupApproval && input.approval && !input.skipFirst) {
+		await input.delivery.run(
+			() =>
+				sendTo(input.channel, input.replyTo, {
+					content: redactedApprovalPendingText(),
+				}),
+			{ ...input.context, retry: "send" },
+		);
+		await notifyDiscordApprovers({
+			channel: input.channel,
+			allow: input.allow,
+			approvalConfig: input.approvalConfig,
+			approval: input.approval,
+			text: input.text,
+			replyTo: input.replyTo,
+			context: input.context,
+			delivery: input.delivery,
+		});
+		return;
+	}
 	if (input.approval && !input.skipFirst) {
 		const approval = input.approval;
 		await input.delivery.run(
@@ -494,6 +567,40 @@ async function sendTextChunks(input: {
 					content: chunks[index],
 				}),
 			{ ...input.context, retry: "send" },
+		);
+	}
+}
+
+async function notifyDiscordApprovers(input: {
+	channel: TextBasedChannel;
+	allow?: DiscordAllow;
+	approvalConfig?: ApprovalConfig;
+	approval: NonNullable<Outbound["approval"]>;
+	text: string;
+	replyTo?: Message;
+	context: Record<string, unknown>;
+	delivery: DeliveryQueue;
+}): Promise<void> {
+	const configured = actorUsers(input.approvalConfig?.approvers);
+	const allowedUsers = input.allow?.users?.map(String) ?? [];
+	const recipients = configured.length
+		? allowedUsers.length
+			? configured.filter((user) => allowedUsers.includes(user))
+			: configured
+		: allowedUsers;
+	for (const userId of recipients) {
+		const user = await input.channel.client.users.fetch(userId).catch(() => undefined);
+		if (!user) continue;
+		const dm = await user.createDM().catch(() => undefined);
+		if (!dm) continue;
+		await input.delivery.run(
+			() =>
+				sendTo(dm, undefined, {
+					content: input.text,
+					embeds: [approvalEmbed(input.approval, "pending")],
+					components: approvalComponents(input.approval),
+				}),
+			{ ...input.context, retry: "send", approvalDm: userId },
 		);
 	}
 }
@@ -722,6 +829,11 @@ function approvalEmbedForAction(
 	actor: string,
 	source: Message,
 ): EmbedBuilder | undefined {
+	if (source.channel.type !== ChannelType.DM && state) {
+		return new EmbedBuilder()
+			.setTitle(approvalTitle(state))
+			.setDescription(redactedApprovalResolvedText(state, actor ? `<@${actor}>` : undefined));
+	}
 	if (out.approval && state) return approvalEmbed(out.approval, state, actor);
 	const embed = source.embeds[0];
 	if (!embed || embed.fields.length >= 25) return undefined;

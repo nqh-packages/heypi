@@ -1,5 +1,20 @@
 export type GateResult = { ok: true } | { ok: false; reason: string };
 
+/** Normalized actor and chat context for inbound message and callback allow checks. */
+export type InboundAllowContext = {
+	channel: string;
+	actor: string;
+	isDm: boolean;
+	groups?: string[];
+};
+
+export type InboundAllowCheck = (context: InboundAllowContext) => GateResult;
+
+/** Runs an adapter-specific allow check against normalized inbound context. */
+export function inboundAllowed(check: InboundAllowCheck, context: InboundAllowContext): GateResult {
+	return check(context);
+}
+
 export type GateDimension = {
 	allowlist?: string[];
 	value?: string;

@@ -6,7 +6,7 @@ export type DeliveryConfig = {
 	baseMs?: number;
 };
 
-type DeliveryRetry = "idempotent" | "send";
+type DeliveryRetry = "idempotent" | "send" | "send_plain" | "edit_plain";
 export type DeliveryContext = Record<string, unknown> & { retry?: DeliveryRetry };
 
 /** Serializes provider delivery calls and retries transient failures. */

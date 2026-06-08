@@ -17,9 +17,17 @@ import type { SchedulerConfig } from "./core/scheduler.js";
 import type { AgentToolDefinition } from "./core-tools.js";
 import type { AttachmentProcessingConfig, AttachmentStore } from "./io/attachments.js";
 import type { Adapter } from "./io/handler.js";
+import type { SttConfig } from "./io/stt/types.js";
 import type { RuntimeName, RuntimeProvider } from "./runtime/types.js";
 import type { StateConfig } from "./state.js";
 import type { Store } from "./store/types.js";
+
+/** Root env fallbacks for local STT; referenced by io/stt/local-whisper.ts. */
+export const sttEnv = {
+	modelPath: process.env.HEYPI_STT_MODEL_PATH,
+	localCommand: process.env.HEYPI_LOCAL_STT_COMMAND,
+	hermesCommand: process.env.HERMES_LOCAL_STT_COMMAND,
+};
 
 export type { AdminConfig } from "./admin/index.js";
 export type { StateConfig } from "./state.js";
@@ -105,6 +113,8 @@ export type AttachmentConfig = {
 	process?: AttachmentProcessingConfig;
 };
 
+export type { SttConfig, SttLocalConfig, SttResult } from "./io/stt/types.js";
+
 export type ApprovalConfig = {
 	approvers?: ActorPolicy;
 	expiresInMs?: number;
@@ -171,6 +181,7 @@ export type HeypiConfig = {
 	http?: HttpConfig;
 	admin?: boolean | AdminConfig;
 	attachments?: AttachmentConfig;
+	stt?: SttConfig;
 	approval?: ApprovalConfig;
 	chat?: ChatConfig;
 	scope?: Scope;

@@ -1,6 +1,13 @@
 import { type AllMiddlewareArgs, App, HTTPReceiver, type types } from "@slack/bolt";
-import { approvalStateLine, approvalStateTitle, codeFence } from "../core/approval-view.js";
-import { actorGroups as configuredGroups } from "../core/approvers.js";
+import type { ApprovalConfig } from "../config.js";
+import {
+	approvalStateLine,
+	approvalStateTitle,
+	codeFence,
+	redactedApprovalPendingText,
+	redactedApprovalResolvedText,
+} from "../core/approval-view.js";
+import { actorUsers, actorGroups as configuredGroups } from "../core/approvers.js";
 import { message as errorMessage, type Logger, userError } from "../core/log.js";
 import type { AppMessages } from "../core/messages.js";
 import type { ScopedKey } from "../core/scope.js";
@@ -9,7 +16,7 @@ import { resolveOutboundAttachments, saveInboundAttachments } from "./attachment
 import { type Attachment, type AttachmentStore, responseBytes } from "./attachments.js";
 import { runChatMessage } from "./chat-message.js";
 import { type DeliveryConfig, DeliveryQueue } from "./delivery.js";
-import { allowByDimensions, messageTriggered } from "./gate.js";
+import { allowByDimensions, inboundAllowed, messageTriggered } from "./gate.js";
 import type { Adapter, AdapterStart, AdapterTarget, Handler, Outbound } from "./handler.js";
 import { logCtx } from "./log-context.js";
 import { assertRouteName } from "./name.js";
@@ -105,7 +112,7 @@ export function slack(input: SlackConfig): Adapter {
 			botUserId = await slackBotUserId(bolt.client, log);
 			bolt.action(APPROVE, async ({ ack, body, action, client }) => {
 				await ack();
-				await handleAction({
+				await handleSlackAction({
 					kind: "approve",
 					body,
 					action,
@@ -116,6 +123,7 @@ export function slack(input: SlackConfig): Adapter {
 					provider: name,
 					adapterKind: kind,
 					groups,
+					allow: input.allow,
 					progress: input.progress,
 					streaming: input.streaming,
 					messages: start.messages,
@@ -123,7 +131,7 @@ export function slack(input: SlackConfig): Adapter {
 			});
 			bolt.action(DENY, async ({ ack, body, action, client }) => {
 				await ack();
-				await handleAction({
+				await handleSlackAction({
 					kind: "deny",
 					body,
 					action,
@@ -134,12 +142,13 @@ export function slack(input: SlackConfig): Adapter {
 					provider: name,
 					adapterKind: kind,
 					groups,
+					allow: input.allow,
 					messages: start.messages,
 				});
 			});
 			bolt.action(CANCEL, async ({ ack, body, action, client }) => {
 				await ack();
-				await handleAction({
+				await handleSlackAction({
 					kind: "cancel",
 					body,
 					action,
@@ -150,12 +159,13 @@ export function slack(input: SlackConfig): Adapter {
 					provider: name,
 					adapterKind: kind,
 					groups,
+					allow: input.allow,
 					messages: start.messages,
 				});
 			});
 			bolt.action(STATUS, async ({ ack, body, action, client }) => {
 				await ack();
-				await handleAction({
+				await handleSlackAction({
 					kind: "status",
 					body,
 					action,
@@ -166,6 +176,7 @@ export function slack(input: SlackConfig): Adapter {
 					provider: name,
 					adapterKind: kind,
 					groups,
+					allow: input.allow,
 					messages: start.messages,
 				});
 			});
@@ -322,6 +333,8 @@ export function slack(input: SlackConfig): Adapter {
 								logger: log,
 								context: context({ thread: reply.thread }),
 								delivery,
+								allow: input.allow,
+								approvalConfig: start.approval,
 							});
 						},
 						streamed: async () => undefined,
@@ -338,6 +351,8 @@ export function slack(input: SlackConfig): Adapter {
 								logger: log,
 								context: context({ thread: reply.thread }),
 								delivery,
+								allow: input.allow,
+								approvalConfig: start.approval,
 							});
 						},
 					},
@@ -550,8 +565,14 @@ async function postPublicChunks(input: {
 	logger?: Logger;
 	context?: Record<string, unknown>;
 	delivery: DeliveryQueue;
+	allow?: SlackAllow;
+	approvalConfig?: ApprovalConfig;
 }): Promise<void> {
-	const chunks = slackChunks(input.text, Boolean(input.approval));
+	const isDm = slackChannelIsDm(input.channel);
+	const groupApproval = Boolean(input.approval && !isDm);
+	const text = groupApproval ? redactedApprovalPendingText() : input.text;
+	const approval = groupApproval ? undefined : input.approval;
+	const chunks = slackChunks(text, Boolean(approval));
 	for (let index = input.skipFirst ? 1 : 0; index < chunks.length; index++) {
 		await input.delivery.run(
 			() =>
@@ -559,7 +580,7 @@ async function postPublicChunks(input: {
 					slackMessage({
 						channel: input.channel,
 						text: chunks[index],
-						approval: index === 0 ? input.approval : undefined,
+						approval: index === 0 ? approval : undefined,
 						thread: input.thread,
 						replyBroadcast: input.replyBroadcast ?? false,
 					}),
@@ -567,6 +588,52 @@ async function postPublicChunks(input: {
 			{ ...input.context, retry: "send" },
 		);
 	}
+	if (groupApproval && input.approval) {
+		await notifySlackApprovers({
+			client: input.client,
+			channel: input.channel,
+			thread: input.thread,
+			allow: input.allow,
+			approvalConfig: input.approvalConfig,
+			approval: input.approval,
+			text: input.text,
+			delivery: input.delivery,
+		});
+	}
+}
+
+async function notifySlackApprovers(input: {
+	client: SlackClient;
+	channel: string;
+	thread?: string;
+	allow?: SlackAllow;
+	approvalConfig?: ApprovalConfig;
+	approval: NonNullable<Outbound["approval"]>;
+	text: string;
+	delivery: DeliveryQueue;
+}): Promise<void> {
+	const configured = actorUsers(input.approvalConfig?.approvers);
+	const allowedUsers = input.allow?.users?.map(String) ?? [];
+	const recipients = configured.length
+		? allowedUsers.length
+			? configured.filter((user) => allowedUsers.includes(user))
+			: configured
+		: allowedUsers;
+	for (const user of recipients) {
+		await postEphemeralChunks({
+			client: input.client,
+			channel: input.channel,
+			user,
+			text: input.text,
+			approval: input.approval,
+			thread: input.thread,
+			delivery: input.delivery,
+		});
+	}
+}
+
+function slackChannelIsDm(channel: string): boolean {
+	return channel.startsWith("D");
 }
 
 async function postEphemeralChunks(input: {
@@ -871,6 +938,14 @@ async function slackBotUserId(client: SlackClient, logger: Logger): Promise<stri
 	}
 }
 
+function slackActionDm(body: unknown): boolean {
+	const root = record(body);
+	const channelType = stringProp(record(root?.channel), "type");
+	if (channelType === "im") return true;
+	const channel = stringProp(record(root?.channel), "id");
+	return Boolean(channel?.startsWith("D"));
+}
+
 function slackDm(msg: { channel?: string; channel_type?: string }): boolean {
 	return msg.channel_type === "im" || msg.channel?.startsWith("D") === true;
 }
@@ -1043,7 +1118,7 @@ function slackFileHost(host: string): boolean {
 	return host === "slack.com" || host.endsWith(".slack.com") || host.endsWith(".slack-edge.com");
 }
 
-async function handleAction(input: {
+export async function handleSlackAction(input: {
 	kind: "approve" | "deny" | "cancel" | "status";
 	body: unknown;
 	action: unknown;
@@ -1054,6 +1129,7 @@ async function handleAction(input: {
 	provider: string;
 	adapterKind: string;
 	groups: SlackGroupResolver;
+	allow?: SlackAllow;
 	progress?: SlackConfig["progress"];
 	streaming?: ReplyStreamOption;
 	messages?: AppMessages;
@@ -1069,12 +1145,40 @@ async function handleAction(input: {
 	const target = context.threadTs ?? context.message;
 	const logContext = (extra?: Record<string, unknown>) =>
 		logCtx({ trace, adapter: input.provider, kind: input.adapterKind, channel: actionChannel }, extra);
+	const allow = inboundAllowed(
+		(ctx) =>
+			slackAllowed(input.allow, {
+				channel: ctx.channel,
+				user: ctx.actor,
+				groups: ctx.groups,
+				isDm: ctx.isDm,
+			}),
+		{ channel: actionChannel, actor: actionActor, isDm: slackActionDm(input.body), groups: actorGroups },
+	);
+	if (!allow.ok) {
+		input.logger.debug(
+			"adapter.drop",
+			logContext({
+				actor: actionActor,
+				reason: allow.reason,
+			}),
+		);
+		await postEphemeralChunks({
+			client: input.client,
+			channel: actionChannel,
+			user: actionActor,
+			text: "Not allowed",
+			thread: context.threadTs ?? context.message,
+			delivery: input.delivery,
+		});
+		return;
+	}
 	let acknowledged = false;
 	let progress: ReturnType<typeof startProgress> | undefined;
 	const acknowledge = async (out: Outbound) => {
 		const actionMessage = context.message;
 		if (!actionMessage) return;
-		const update = slackApprovalUpdate(out, "approved", actionActor, input.body);
+		const update = slackApprovalUpdate(out, "approved", actionActor, input.body, actionChannel);
 		if (!hasApprovalPayload(update)) throw new Error("Slack approval acknowledgement missing approval blocks");
 		await input.delivery.run(
 			() =>
@@ -1105,7 +1209,7 @@ async function handleAction(input: {
 		if (!actionMessage) throw new Error("Slack approval action missing message");
 		const state = out.approvalResolution;
 		if (!state) throw new Error("Slack approval replacement missing resolution");
-		const update = slackApprovalUpdate(out, state, actionActor, input.body);
+		const update = slackApprovalUpdate(out, state, actionActor, input.body, actionChannel);
 		if (!hasApprovalPayload(update)) throw new Error("Slack approval action missing approval blocks");
 		await input.delivery.run(
 			() =>
@@ -1153,7 +1257,7 @@ async function handleAction(input: {
 			const channel = context.channel;
 			const actor = context.actor;
 			if (out.replaceOriginal && context.message) {
-				const update = slackApprovalUpdate(out, out.approvalResolution, actor, input.body);
+				const update = slackApprovalUpdate(out, out.approvalResolution, actor, input.body, channel);
 				if (hasApprovalPayload(update)) {
 					try {
 						await input.delivery.run(
@@ -1190,7 +1294,7 @@ async function handleAction(input: {
 		const message = context.message;
 		const resolution = out.approvalResolution;
 		if ((input.kind === "approve" || input.kind === "deny") && out.approval && resolution) {
-			const update = slackApprovalUpdate(out, resolution, context.actor, input.body);
+			const update = slackApprovalUpdate(out, resolution, context.actor, input.body, context.channel);
 			await input.delivery.run(
 				() =>
 					input.client.chat.update({
@@ -1311,7 +1415,19 @@ function slackApprovalUpdate(
 	state: Outbound["approvalResolution"],
 	actor: string,
 	body: unknown,
+	channel?: string,
 ): SlackUpdate {
+	if (state && channel && !slackChannelIsDm(channel)) {
+		return {
+			text: redactedApprovalResolvedText(state, actor ? `<@${actor}>` : undefined),
+			blocks: [
+				{
+					type: "section",
+					text: { type: "mrkdwn", text: redactedApprovalResolvedText(state, actor ? `<@${actor}>` : undefined) },
+				},
+			],
+		};
+	}
 	const text = slackApprovalFallbackText(out, state, actor);
 	const blocks = slackResolvedApprovalBlocks(out, state, actor, body);
 	return blocks ? { text: "", blocks: [], ...approvalAttachmentPayload(blocks, text, state) } : { text };

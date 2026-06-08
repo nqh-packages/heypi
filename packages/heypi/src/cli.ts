@@ -75,14 +75,16 @@ function buildCli() {
 				throw new Error(`Unknown command: slack ${action}`);
 			})(flags),
 		);
-	cli.command("telegram <action>", "Telegram commands: check, observe")
+	cli.command("telegram <action>", "Telegram commands: check, observe, setup-commands")
 		.option("--env <path>", "Load env file")
 		.option("--token <token>", "Telegram bot token")
 		.option("--timeout <seconds>", "Timeout in seconds")
+		.option("--config <path>", "App config file with telegram.commands")
 		.action((action: string, flags: Flags) =>
 			withEnv((input) => {
 				if (action === "check") return telegramCheck(input);
 				if (action === "observe") return telegramObserve(input);
+				if (action === "setup-commands") return telegramSetupCommands(input);
 				throw new Error(`Unknown command: telegram ${action}`);
 			})(flags),
 		);
@@ -269,6 +271,7 @@ async function telegramCheck(flags: Flags): Promise<void> {
 async function telegramObserve(flags: Flags): Promise<void> {
 	const token = secret(flags, "token", "TELEGRAM_BOT_TOKEN");
 	const timeout = numberFlag(flags, "timeout", 60);
+	line(warn("observe calls deleteWebhook and conflicts with webhook ingress mode"));
 	await telegramCall(token, "deleteWebhook", { drop_pending_updates: false });
 	const start = Date.now();
 	let offset = await latestTelegramUpdate(token);
@@ -282,13 +285,59 @@ async function telegramObserve(flags: Flags): Promise<void> {
 		for (const update of updates) {
 			offset = update.update_id;
 			const msg = update.message ?? update.edited_message;
-			if (!msg?.chat) continue;
-			line(ok(`Observed ${msg.chat.type ?? "chat"}: ${chatName(msg.chat)} (${msg.chat.id})`));
-			line(`targets: { telegram: { channels: ["${msg.chat.id}"] } }`);
+			if (!msg?.chat || !msg.from) continue;
+			const chatId = String(msg.chat.id);
+			const userId = String(msg.from.id);
+			line(ok(`Observed ${msg.chat.type ?? "chat"}: ${chatName(msg.chat)} (${chatId})`));
+			line(`user: ${userId}${msg.from.username ? ` (@${msg.from.username})` : ""}`);
+			line(`allow.chats: ${JSON.stringify([chatId])}`);
+			line(`allow.users: ${JSON.stringify([userId])}`);
+			line(`targets: { telegram: { allow: { chats: [${chatId}], users: [${userId}] } } }`);
 			return;
 		}
 	}
 	throw new Error("Timed out waiting for Telegram message");
+}
+
+export type TelegramBotCommand = { command: string; description: string };
+
+export const DEFAULT_TELEGRAM_COMMANDS: TelegramBotCommand[] = [
+	{ command: "start", description: "Start the bot" },
+	{ command: "help", description: "Show help" },
+	{ command: "status", description: "Show thread status" },
+	{ command: "approvals", description: "List pending approvals" },
+];
+
+export function buildTelegramSetupCommands(input?: { commands?: TelegramBotCommand[] }): TelegramBotCommand[] {
+	const commands = input?.commands?.length ? input.commands : DEFAULT_TELEGRAM_COMMANDS;
+	for (const row of commands) {
+		if (!row.command.trim() || !row.description.trim()) {
+			throw new Error("Telegram commands require non-empty command and description");
+		}
+		if (!/^[a-z0-9_]{1,32}$/.test(row.command)) {
+			throw new Error(`Invalid Telegram command name: ${row.command}`);
+		}
+	}
+	return commands;
+}
+
+async function telegramSetupCommands(flags: Flags): Promise<void> {
+	const token = secret(flags, "token", "TELEGRAM_BOT_TOKEN");
+	const configPath = stringFlag(flags, "config");
+	let commands = DEFAULT_TELEGRAM_COMMANDS;
+	if (configPath) {
+		const raw = readFileSync(configPath, "utf8");
+		const parsed = JSON.parse(raw) as { telegram?: { commands?: TelegramBotCommand[] } };
+		commands = buildTelegramSetupCommands({ commands: parsed.telegram?.commands });
+	} else {
+		commands = buildTelegramSetupCommands();
+	}
+	try {
+		await telegramCall(token, "setMyCommands", { commands });
+		line(ok(`Registered ${commands.length} Telegram command(s)`));
+	} catch (error) {
+		throw new Error(`Telegram setMyCommands failed: ${error instanceof Error ? error.message : String(error)}`);
+	}
 }
 
 async function discordCheck(flags: Flags): Promise<void> {
@@ -549,6 +598,7 @@ Usage:
   heypi slack env
   heypi telegram check [--env .env]
   heypi telegram observe [--env .env] [--timeout 60]
+  heypi telegram setup-commands [--env .env] [--config ./config.json]
   heypi discord check [--env .env]
   heypi discord observe [--env .env] [--timeout 60]
   heypi discord channels [--env .env]
@@ -817,6 +867,7 @@ type TelegramChat = {
 
 type TelegramMessage = {
 	chat: TelegramChat;
+	from?: { id: number; username?: string };
 };
 
 type TelegramUpdate = {

@@ -33,5 +33,6 @@ Examples are runnable reference apps for heypi. They should prove real app shape
 | Slack DevOps | `pnpm run dev:slack` for manual smoke; root tests cover shared framework behavior. |
 | Discord Gondolin | `pnpm run dev:discord` for manual smoke; runtime package tests cover provider behavior. |
 | Telegram workout | `pnpm run dev:telegram` for manual smoke. |
+| Telegram alerts | `pnpm run dev:telegram:alerts` for manual smoke. |
 | Telegram co-founder | `pnpm run test:telegram:cofounder` |
 | Webhook GitHub Docker | `pnpm run dev:webhook` for manual smoke; Docker runtime tests cover provider behavior. |

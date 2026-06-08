@@ -1,14 +1,43 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseTelegramCallback, telegramApprovalText, telegramChunks } from "../src/io/telegram.js";
+import { redactedApprovalPendingText } from "../src/core/approval-view.js";
+import type { Logger } from "../src/core/log.js";
+import type { AppMessages } from "../src/core/messages.js";
+import { DeliveryQueue } from "../src/io/delivery.js";
+import { BoundedQueue } from "../src/io/stt/queue.js";
+import {
+	handleTelegramUpdate,
+	isTelegramImageMime,
+	parseTelegramCallback,
+	resolveTelegramInboundText,
+	TELEGRAM_PHOTO_ONLY_DEFAULT,
+	telegramApprovalDisplayPlan,
+	telegramApprovalText,
+	telegramChunks,
+	telegramDirectChat,
+	telegramMediaTriggerBypass,
+	telegramPhotoOnly,
+	telegramTriggered,
+	telegramVoiceOrAudio,
+} from "../src/io/telegram.js";
 
-test("parseTelegramCallback parses control actions", () => {
-	assert.deepEqual(parseTelegramCallback("approve:abc"), { kind: "approve", id: "abc" });
-	assert.deepEqual(parseTelegramCallback("deny:def"), { kind: "deny", id: "def" });
-	assert.deepEqual(parseTelegramCallback("cancel:trace-1"), { kind: "cancel", id: "trace-1" });
-	assert.deepEqual(parseTelegramCallback("status"), { kind: "status" });
-	assert.equal(parseTelegramCallback("unknown:abc"), undefined);
-	assert.equal(parseTelegramCallback("approve:"), undefined);
+const noopLogger: Logger = {
+	debug: () => undefined,
+	info: () => undefined,
+	warn: () => undefined,
+	error: () => undefined,
+};
+
+const testMessages = { error: "error" } as AppMessages;
+
+test("parseTelegramCallback parses namespaced control actions", () => {
+	assert.deepEqual(parseTelegramCallback("heypi:approve:abc"), { kind: "approve", id: "abc" });
+	assert.deepEqual(parseTelegramCallback("heypi:deny:def"), { kind: "deny", id: "def" });
+	assert.deepEqual(parseTelegramCallback("heypi:cancel:trace-1"), { kind: "cancel", id: "trace-1" });
+	assert.deepEqual(parseTelegramCallback("heypi:status"), { kind: "status" });
+	assert.deepEqual(parseTelegramCallback("heypi:custom:token1"), { kind: "custom", token: "token1" });
+	assert.equal(parseTelegramCallback("approve:abc"), undefined);
+	assert.equal(parseTelegramCallback("heypi:approve:"), undefined);
 });
 
 test("telegramChunks keeps markup chunks under Telegram edit limits", () => {
@@ -41,4 +70,133 @@ test("Telegram approval resolution preserves approval text and appends status", 
 	assert.match(approved, /^\*Approved\*/);
 	assert.match(approved, /Reason:\nRun bash command/);
 	assert.match(approved, /Approved by user 42/);
+});
+
+test("telegramMediaTriggerBypass covers voice, audio, and photo-only", () => {
+	assert.equal(telegramVoiceOrAudio({ message_id: 1, chat: { id: 1 }, voice: { file_id: "v" } }), true);
+	assert.equal(telegramVoiceOrAudio({ message_id: 1, chat: { id: 1 }, audio: { file_id: "a" } }), true);
+	assert.equal(telegramPhotoOnly({ message_id: 1, chat: { id: 1 }, photo: [{ file_id: "p" }] }), true);
+	assert.equal(
+		telegramMediaTriggerBypass({ message_id: 1, chat: { id: 1 }, photo: [{ file_id: "p" }], caption: "hi" }),
+		false,
+	);
+});
+
+test("photo-only messages bypass mention trigger but still require mention for plain text", () => {
+	const photoOnly = { message_id: 1, chat: { id: 1 }, photo: [{ file_id: "p" }] };
+	assert.deepEqual(telegramTriggered(undefined, { text: "", isDm: false, botUsername: "my_bot" }), {
+		ok: false,
+		reason: "mention_required",
+	});
+	assert.equal(telegramMediaTriggerBypass(photoOnly), true);
+	assert.equal(resolveTelegramInboundText(photoOnly), TELEGRAM_PHOTO_ONLY_DEFAULT);
+	assert.equal(resolveTelegramInboundText(photoOnly, "Snapshot"), "Snapshot");
+});
+
+test("isTelegramImageMime detects common image types", () => {
+	assert.equal(isTelegramImageMime("image/png", "file.bin"), true);
+	assert.equal(isTelegramImageMime(undefined, "photo.jpg"), true);
+	assert.equal(isTelegramImageMime("application/pdf", "doc.pdf"), false);
+});
+
+test("telegramDirectChat treats positive chat ids as DMs", () => {
+	assert.equal(telegramDirectChat(42), true);
+	assert.equal(telegramDirectChat(-100123), false);
+});
+
+test("telegramApprovalDisplayPlan redacts pending approvals in groups", () => {
+	const approval = {
+		id: "approval-1",
+		callId: "call-1",
+		command: "curl --version",
+		runtime: "just-bash",
+		reason: "Run bash command.",
+		allowed: [],
+		requestedBy: "42",
+		details: [{ label: "Command", value: "curl --version", format: "code" as const }],
+	};
+	const group = telegramApprovalDisplayPlan({ text: "body", approval, isDm: false });
+	assert.equal(group.visibleText, redactedApprovalPendingText());
+	assert.equal(group.groupApproval, true);
+	assert.equal(group.showMarkup, false);
+
+	const dm = telegramApprovalDisplayPlan({ text: "body", approval, isDm: true });
+	assert.match(dm.visibleText, /Approval ID: approval-1/);
+	assert.equal(dm.groupApproval, false);
+	assert.equal(dm.showMarkup, true);
+
+	const resolved = telegramApprovalDisplayPlan({
+		text: "body",
+		approval,
+		approvalResolution: "approved",
+		actor: "user 42",
+		isDm: false,
+	});
+	assert.equal(resolved.visibleText, "Approved by user 42.");
+	assert.equal(resolved.showMarkup, false);
+});
+
+test("inbound handler reply sends poll after text", async () => {
+	const sent: string[] = [];
+	const polls: Array<Record<string, unknown>> = [];
+	const client = {
+		sendMessage: async (input: { text: string }) => {
+			sent.push(input.text);
+			return { message_id: 99 };
+		},
+		editMessageText: async () => undefined,
+		deleteMessage: async () => undefined,
+		answerCallbackQuery: async () => undefined,
+		sendPoll: async (input: Record<string, unknown>) => {
+			polls.push(input);
+		},
+		getFile: async () => ({ file_path: "file" }),
+		downloadFile: async () => new Uint8Array(),
+		sendPhoto: async () => undefined,
+		sendDocument: async () => undefined,
+	} as never;
+	await handleTelegramUpdate({
+		client,
+		start: {
+			handler: async () => ({
+				text: "Pick one",
+				poll: { question: "Lunch?", options: ["Pizza", "Salad"], isAnonymous: true },
+			}),
+			logger: noopLogger,
+			messages: testMessages,
+		},
+		config: { token: "t", trigger: "message", progress: false as const },
+		delivery: new DeliveryQueue(false),
+		provider: "telegram",
+		kind: "telegram",
+		update: {
+			update_id: 1,
+			message: {
+				message_id: 1,
+				from: { id: 42, is_bot: false },
+				chat: { id: 42, type: "private" },
+				text: "poll me",
+			},
+		},
+		stopped: () => false,
+		sttState: {
+			queue: new BoundedQueue({ maxConcurrent: 2, maxPerChat: 1, maxPending: 32 }),
+			generations: new Map(),
+			abortControllers: new Map(),
+		},
+		moderationState: {
+			flood: new Map(),
+			spam: new Map(),
+		},
+		callbackRegistry: new Map(),
+	});
+	assert.deepEqual(sent, ["Pick one"]);
+	assert.equal(polls.length, 1);
+	assert.deepEqual(polls[0], {
+		chat_id: 42,
+		message_thread_id: undefined,
+		question: "Lunch?",
+		options: ["Pizza", "Salad"],
+		is_anonymous: true,
+	});
 });

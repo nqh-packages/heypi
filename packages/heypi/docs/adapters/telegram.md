@@ -24,6 +24,9 @@ For a runnable example, see [`examples/telegram-workout`](https://github.com/hun
 | `progress` | No | Progress message behavior, or `false`. |
 | `streaming` | No | Draft reply streaming behavior. |
 | `delivery` | No | Telegram send pacing/retry behavior, or `false`. |
+| `parseMode` | No | Outbound formatting: `"MarkdownV2"`, `"HTML"`, or `"plain"`. Defaults to `"plain"`. |
+| `stt` | No | Local voice transcription config. Explicit opt-in via `stt.enabled`. |
+| `photoOnlyText` | No | Synthetic inbound text for photo-only messages. Defaults to `Photo received`. |
 
 Telegram has no Slack user group or Discord role equivalent in heypi. With:
 
@@ -52,11 +55,33 @@ Verify the token and observe delivered updates:
 ```bash
 npx @hunvreus/heypi telegram check --env .env
 npx @hunvreus/heypi telegram observe --env .env
+npx @hunvreus/heypi telegram setup-commands --env .env
 ```
 
-Telegram cannot enumerate chats. `telegram observe` waits for a delivered DM, group, channel, or forum message and prints IDs for config and job targets.
+Telegram cannot enumerate chats. `telegram observe` waits for a delivered DM, group, channel, or forum message and prints chat ID, user ID, and copy-paste `allow.chats` / `allow.users` snippets for config and job targets.
 
-`telegram observe` deletes any active webhook for that bot token before polling. Do not run another long-polling process with the same token while observing.
+`telegram observe` deletes any active webhook for that bot token before polling. Do not run webhook mode or another long-polling process with the same token while observing.
+
+`telegram setup-commands` registers BotFather command menus via `setMyCommands`. Pass `--config ./config.json` with `{ "telegram": { "commands": [{ "command": "status", "description": "Show thread status" }] } }` or use built-in defaults.
+
+## Local voice transcription (STT)
+
+Voice and audio notes require explicit opt-in:
+
+```ts
+telegram({
+	token: process.env.TELEGRAM_BOT_TOKEN!,
+	stt: { enabled: true, local: { modelPath: process.env.HEYPI_STT_MODEL_PATH! } },
+})
+```
+
+Host prerequisites: `ffmpeg`, `whisper-cpp` or `whisper-cli`, and a ggml model file. Configure `HEYPI_STT_MODEL_PATH` and optionally `HEYPI_LOCAL_STT_COMMAND` in the environment. When prerequisites are missing, users receive a concise unavailable message (AE4) instead of a silent failure.
+
+STT runs on a bounded background queue so long polling stays responsive. When the queue is full, users receive a busy message.
+
+## Approval visibility in groups
+
+Pending approvals in shared chats show a redacted group stub without approval IDs, command details, or actionable buttons. Approvers receive the full approval UI by DM. Group-resolved edits show actor and outcome only.
 
 ## Config
 
@@ -92,3 +117,53 @@ For app-wide config such as `state`, `runtime`, and `agent`, see [Configuration]
 | --- | --- |
 | `npx @hunvreus/heypi telegram check [--env .env]` | Verify Telegram bot credentials. |
 | `npx @hunvreus/heypi telegram observe [--env .env] [--timeout 60]` | Wait for a delivered Telegram update and print IDs/target snippets. |
+| `npx @hunvreus/heypi telegram setup-commands [--env .env] [--config ./config.json]` | Register BotFather command menus. |
+
+## Webhook ingress (Bot API)
+
+Long polling remains the default. For production HTTPS deployments, enable Telegram Bot API webhook mode on the shared HTTP listener:
+
+```ts
+createHeypi({
+	http: { host: "0.0.0.0", port: 3000 },
+	adapters: [
+		telegram({
+			token: process.env.TELEGRAM_BOT_TOKEN!,
+			mode: "webhook",
+			webhook: {
+				url: process.env.HEYPI_TELEGRAM_WEBHOOK_URL!,
+				secret: process.env.HEYPI_TELEGRAM_WEBHOOK_SECRET!,
+			},
+		}),
+	],
+});
+```
+
+Webhook mode requires `HEYPI_TELEGRAM_WEBHOOK_URL`, a cryptographically random `HEYPI_TELEGRAM_WEBHOOK_SECRET` (min 32 bytes), and shared `http` config. Poll and webhook modes are mutually exclusive.
+
+## Group automation (opt-in)
+
+All group automation defaults are off:
+
+```ts
+telegram({
+	groupAutomation: {
+		welcome: true,
+		flood: { windowMs: 10_000, maxMessages: 5 },
+		linkFilter: { allowlist: ["example.com"] },
+		spam: { maxRepeated: 3, maxMentions: 8 },
+		editedMessages: "ignore",
+		auditDrops: false,
+	},
+})
+```
+
+Gate order: allow → trigger → flood → link → spam → content/STT → agent. Moderation drops are silent (debug log); unsupported types that would reach the agent receive a concise user-visible reply.
+
+## Custom markup and callbacks
+
+Built-in approval/progress callbacks use the `heypi:` namespace. Outbound messages may include `replyMarkup` for custom inline keyboards; agent-supplied callback data is rewritten to short `heypi:custom:` tokens when needed.
+
+## Polls and location
+
+Scheduled or agent replies may include `poll: { question, options }` on `Outbound`. Location messages include structured coordinates in inbound `data.location`.
